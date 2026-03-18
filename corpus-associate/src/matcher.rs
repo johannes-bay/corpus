@@ -36,9 +36,9 @@ fn build_context(conn: &Connection, file: FileEntry) -> Result<ScoringContext> {
     let all_props = queries::get_properties(conn, &file.path)?;
     let mut properties = HashMap::new();
     for p in all_props {
-        if p.domain == "audio" {
-            properties.insert(p.key.clone(), p);
-        }
+        // Key by "domain.key" so axes can look up any domain
+        let lookup = format!("{}.{}", p.domain, p.key);
+        properties.insert(lookup, p);
     }
     Ok(ScoringContext { file, properties })
 }
@@ -65,10 +65,21 @@ pub fn find_matches(
     let seed_ctx = build_context(conn, seed_file)?;
 
     // --- Gather candidate files ---
-    // Start with BPM pre-filter if the seed has a valid BPM and a bpm axis is
-    // requested. Then fill in any files we haven't seen yet for other axes.
+    // Detect the seed's domain from its enriched properties and gather
+    // candidates from the same domain. Also pull in cross-domain candidates
+    // if cross-modal axes are present.
     let mut candidate_files: HashMap<String, FileEntry> = HashMap::new();
 
+    // Determine which domains the seed has properties in
+    let seed_domains: Vec<String> = seed_ctx
+        .properties
+        .values()
+        .map(|p| p.domain.clone())
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    // BPM pre-filter for audio seeds
     let has_bpm_axis = axes.iter().any(|wa| wa.axis.name() == "bpm");
     if has_bpm_axis
         && let Some(seed_bpm) = seed_ctx.audio_num("bpm")
@@ -90,22 +101,39 @@ pub fn find_matches(
         }
     }
 
-    // If no candidates were gathered via BPM (or BPM axis is absent), fall back
-    // to fetching all audio files (those with at least one enriched property).
-    if candidate_files.is_empty() {
-        // Grab files that have any audio-domain property
+    // Brightness pre-filter for image seeds
+    let has_brightness_axis = axes.iter().any(|wa| wa.axis.name() == "brightness");
+    if has_brightness_axis
+        && let Some(seed_bright) = seed_ctx.image_num("brightness")
+        && seed_bright >= 0.0
+    {
+        let bright_range = 0.5;
         let results = queries::find_by_property_range(
             conn,
-            "audio",
-            "bpm",
-            -1e10,
-            1e10,
+            "image",
+            "brightness",
+            (seed_bright - bright_range).max(0.0),
+            (seed_bright + bright_range).min(1.0),
         )?;
         for (file, _val) in results {
             if file.path == seed_path {
                 continue;
             }
             candidate_files.entry(file.path.clone()).or_insert(file);
+        }
+    }
+
+    // If no candidates from pre-filters, fall back to gathering all enriched
+    // files from each domain the seed belongs to
+    if candidate_files.is_empty() {
+        for domain in &seed_domains {
+            let files = queries::find_files_by_domain(conn, domain)?;
+            for file in files {
+                if file.path == seed_path {
+                    continue;
+                }
+                candidate_files.entry(file.path.clone()).or_insert(file);
+            }
         }
     }
 

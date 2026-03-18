@@ -315,6 +315,18 @@ pub fn find_by_property_range(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Find all files that have at least one property in a given domain.
+pub fn find_files_by_domain(conn: &Connection, domain: &str) -> Result<Vec<FileEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT f.id, f.path, f.filename, f.extension, f.size_bytes, f.modified_date, f.parent_folder
+         FROM properties p
+         JOIN files f ON f.path = p.path
+         WHERE p.domain = ?1",
+    )?;
+    let rows = stmt.query_map([domain], row_to_file)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// Count how many files have a given enriched property.
 pub fn count_enriched(conn: &Connection, domain: &str, key: &str) -> Result<i64> {
     let count: i64 = conn.query_row(

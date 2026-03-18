@@ -419,6 +419,7 @@ dependencies = [
  "corpus-associate",
  "corpus-db",
  "corpus-enrich",
+ "corpus-generate",
  "corpus-ui",
  "tokio",
  "tracing",
@@ -448,7 +449,22 @@ dependencies = [
  "indicatif",
  "rayon",
  "rusqlite",
+ "serde_json",
  "thiserror",
+ "tracing",
+]
+
+[[package]]
+name = "corpus-generate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "corpus-associate",
+ "corpus-db",
+ "image",
+ "rusqlite",
+ "serde",
+ "serde_json",
  "tracing",
 ]
 

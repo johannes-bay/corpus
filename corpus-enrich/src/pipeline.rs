@@ -11,6 +11,8 @@ use corpus_db::queries;
 
 use crate::audio;
 use crate::image as img;
+use crate::text;
+use crate::video;
 
 const AUDIO_EXTENSIONS: &[&str] = &[".wav", ".mp3", ".m4a", ".aif", ".aiff", ".flac", ".ogg"];
 
@@ -309,6 +311,229 @@ pub fn enrich_images(conn: &Mutex<Connection>, concurrency: usize) -> Result<()>
     Ok(())
 }
 
+const DOCUMENT_EXTENSIONS: &[&str] = &[
+    ".pdf", ".txt", ".rtf", ".doc", ".docx", ".pages", ".epub", ".mobi", ".md",
+];
+
+const VIDEO_EXTENSIONS: &[&str] = &[".mov", ".mp4", ".avi", ".mkv", ".wmv", ".webm", ".m4v"];
+
+/// Run text/document enrichment on all document files that haven't been processed yet.
+pub fn enrich_documents(conn: &Mutex<Connection>, concurrency: usize) -> Result<()> {
+    let files: Vec<FileEntry> = {
+        let db = conn.lock().unwrap();
+        queries::get_files_without_property(&db, "text", "word_count", DOCUMENT_EXTENSIONS)?
+    };
+
+    let total = files.len();
+    if total == 0 {
+        info!("All document files already enriched.");
+        return Ok(());
+    }
+
+    info!("Found {total} document files to enrich");
+
+    let pb = make_progress_bar(total as u64);
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(concurrency)
+        .build()?;
+
+    // Pre-load existing document_meta for page counts / titles / authors
+    type DocMeta = (Option<i64>, Option<String>, Option<String>);
+    let existing_meta: std::collections::HashMap<String, DocMeta> = {
+        let db = conn.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT path, page_count, title, author FROM document_meta",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        rows.filter_map(|r| r.ok())
+            .map(|(path, pages, title, author)| (path, (pages, title, author)))
+            .collect()
+    };
+
+    let batch_size = 100;
+    for chunk in files.chunks(batch_size) {
+        let results: Vec<(String, text::TextAnalysis)> = pool.install(|| {
+            chunk
+                .par_iter()
+                .filter_map(|file| {
+                    pb.set_message(file.filename.clone());
+                    let ext = file.extension.as_deref().unwrap_or("");
+                    let path = file.path.clone();
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        text::analyze(&path, ext)
+                    }));
+                    pb.inc(1);
+                    match result {
+                        Ok(analysis) => Some((path, analysis)),
+                        Err(_) => {
+                            tracing::warn!("Panic during text analysis of {path}");
+                            None
+                        }
+                    }
+                })
+                .collect()
+        });
+
+        let db = conn.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
+        for (path, a) in &results {
+            // Word count (primary enrichment marker)
+            let wc = a.word_count.unwrap_or(0);
+            queries::set_property(&tx, path, "text", "word_count", Some(wc as f64), None)?;
+
+            if let Some(cc) = a.char_count {
+                queries::set_property(&tx, path, "text", "char_count", Some(cc as f64), None)?;
+            }
+
+            // Page count: prefer our extraction, fall back to existing metadata
+            let page_count = a.page_count.or_else(|| {
+                existing_meta.get(path.as_str()).and_then(|(p, _, _)| *p)
+            });
+            if let Some(pc) = page_count {
+                queries::set_property(&tx, path, "text", "page_count", Some(pc as f64), None)?;
+            }
+
+            if let Some(ref lang) = a.language {
+                queries::set_property(&tx, path, "text", "language", None, Some(lang))?;
+            }
+
+            // Title/author: prefer extraction, fall back to existing metadata
+            let title = a.title.as_deref().or_else(|| {
+                existing_meta.get(path.as_str()).and_then(|(_, t, _)| t.as_deref())
+            });
+            if let Some(t) = title {
+                queries::set_property(&tx, path, "text", "title", None, Some(t))?;
+            }
+
+            let author = a.author.as_deref().or_else(|| {
+                existing_meta.get(path.as_str()).and_then(|(_, _, au)| au.as_deref())
+            });
+            if let Some(au) = author {
+                queries::set_property(&tx, path, "text", "author", None, Some(au))?;
+            }
+        }
+        tx.commit()?;
+    }
+
+    pb.finish_with_message("done");
+    info!("Document enrichment complete");
+    Ok(())
+}
+
+/// Run video enrichment on all video files that haven't been processed yet.
+pub fn enrich_videos(conn: &Mutex<Connection>, concurrency: usize) -> Result<()> {
+    let files: Vec<FileEntry> = {
+        let db = conn.lock().unwrap();
+        queries::get_files_without_property(&db, "video", "duration", VIDEO_EXTENSIONS)?
+    };
+
+    let total = files.len();
+    if total == 0 {
+        info!("All video files already enriched.");
+        return Ok(());
+    }
+
+    info!("Found {total} video files to enrich");
+
+    let pb = make_progress_bar(total as u64);
+
+    // Pre-load existing video_meta for duration/resolution
+    type VidMeta = (Option<f64>, Option<i64>, Option<i64>);
+    let existing_meta: std::collections::HashMap<String, VidMeta> = {
+        let db = conn.lock().unwrap();
+        let mut stmt = db.prepare(
+            "SELECT path, duration_secs, width, height FROM video_meta",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<f64>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, Option<i64>>(3)?,
+            ))
+        })?;
+        rows.filter_map(|r| r.ok())
+            .map(|(path, dur, w, h)| (path, (dur, w, h)))
+            .collect()
+    };
+
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(concurrency)
+        .build()?;
+
+    let batch_size = 50;
+    for chunk in files.chunks(batch_size) {
+        let results: Vec<(String, video::VideoAnalysis)> = pool.install(|| {
+            chunk
+                .par_iter()
+                .map(|file| {
+                    pb.set_message(file.filename.clone());
+                    let analysis = video::analyze(&file.path);
+                    pb.inc(1);
+                    (file.path.clone(), analysis)
+                })
+                .collect()
+        });
+
+        let db = conn.lock().unwrap();
+        let tx = db.unchecked_transaction()?;
+        for (path, a) in &results {
+            let existing = existing_meta.get(path.as_str());
+
+            // Duration: prefer ffprobe, fall back to existing metadata
+            let duration = a.duration.or_else(|| existing.and_then(|(d, _, _)| *d));
+            if let Some(dur) = duration {
+                queries::set_property(&tx, path, "video", "duration", Some(dur), None)?;
+            } else {
+                queries::set_property(&tx, path, "video", "duration", Some(-1.0), Some("undetected"))?;
+            }
+
+            // Resolution
+            let width = a.width.or_else(|| existing.and_then(|(_, w, _)| *w));
+            let height = a.height.or_else(|| existing.and_then(|(_, _, h)| *h));
+            if let Some(w) = width {
+                queries::set_property(&tx, path, "video", "width", Some(w as f64), None)?;
+            }
+            if let Some(h) = height {
+                queries::set_property(&tx, path, "video", "height", Some(h as f64), None)?;
+            }
+
+            if let Some(fps) = a.fps {
+                queries::set_property(&tx, path, "video", "fps", Some(fps), None)?;
+            }
+
+            if let Some(ref codec) = a.video_codec {
+                queries::set_property(&tx, path, "video", "video_codec", None, Some(codec))?;
+            }
+
+            if let Some(has_audio) = a.has_audio {
+                queries::set_property(&tx, path, "video", "has_audio", Some(if has_audio { 1.0 } else { 0.0 }), None)?;
+            }
+
+            if let Some(ar) = a.aspect_ratio {
+                queries::set_property(&tx, path, "video", "aspect_ratio", Some(ar), None)?;
+            }
+
+            if let Some(br) = a.bitrate_kbps {
+                queries::set_property(&tx, path, "video", "bitrate_kbps", Some(br as f64), None)?;
+            }
+        }
+        tx.commit()?;
+    }
+
+    pb.finish_with_message("done");
+    info!("Video enrichment complete");
+    Ok(())
+}
+
 /// Print enrichment statistics.
 pub fn print_stats(conn: &Connection) -> Result<()> {
     let mut total_audio = 0i64;
@@ -352,6 +577,48 @@ pub fn print_stats(conn: &Connection) -> Result<()> {
 
     if total_images > 0 {
         let pct = (bright_count as f64 / total_images as f64) * 100.0;
+        println!("  Progress:              {pct:.1}%");
+    }
+
+    println!();
+
+    let mut total_docs = 0i64;
+    for ext in DOCUMENT_EXTENSIONS {
+        total_docs += queries::count_files_by_ext(conn, ext)?;
+    }
+
+    let word_count = queries::count_enriched(conn, "text", "word_count")?;
+    let lang_count = queries::count_enriched(conn, "text", "language")?;
+    let page_count = queries::count_enriched(conn, "text", "page_count")?;
+
+    println!("Document files total:    {total_docs}");
+    println!("  Word count:            {word_count}");
+    println!("  Language detected:     {lang_count}");
+    println!("  Page count:            {page_count}");
+
+    if total_docs > 0 {
+        let pct = (word_count as f64 / total_docs as f64) * 100.0;
+        println!("  Progress:              {pct:.1}%");
+    }
+
+    println!();
+
+    let mut total_videos = 0i64;
+    for ext in VIDEO_EXTENSIONS {
+        total_videos += queries::count_files_by_ext(conn, ext)?;
+    }
+
+    let vid_dur = queries::count_enriched(conn, "video", "duration")?;
+    let vid_res = queries::count_enriched(conn, "video", "width")?;
+    let vid_fps = queries::count_enriched(conn, "video", "fps")?;
+
+    println!("Video files total:       {total_videos}");
+    println!("  Duration:              {vid_dur}");
+    println!("  Resolution:            {vid_res}");
+    println!("  FPS:                   {vid_fps}");
+
+    if total_videos > 0 {
+        let pct = (vid_dur as f64 / total_videos as f64) * 100.0;
         println!("  Progress:              {pct:.1}%");
     }
 

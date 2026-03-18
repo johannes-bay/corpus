@@ -14,3 +14,4 @@ tracing = { workspace = true }
 rayon = { workspace = true }
 indicatif = { workspace = true }
 image = { workspace = true }
+serde_json = { workspace = true }

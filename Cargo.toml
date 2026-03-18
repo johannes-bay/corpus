@@ -6,6 +6,7 @@ members = [
     "corpus-enrich",
     "corpus-associate",
     "corpus-ui",
+    "corpus-generate",
     "corpus-cli",
 ]
 
@@ -30,6 +31,7 @@ corpus-enrich = { path = "corpus-enrich" }
 corpus-associate = { path = "corpus-associate" }
 corpus-keyfinder = { path = "corpus-keyfinder" }
 corpus-ui = { path = "corpus-ui" }
+corpus-generate = { path = "corpus-generate" }
 image = "0.25"
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }

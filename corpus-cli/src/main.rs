@@ -18,7 +18,7 @@ enum Commands {
         /// Path to the index database
         #[arg(long)]
         db: String,
-        /// Domain to enrich (audio, image)
+        /// Domain to enrich (audio, image, text, video)
         #[arg(long, default_value = "audio")]
         domain: String,
         /// Number of parallel workers
@@ -75,6 +75,45 @@ enum Commands {
         /// Port to listen on
         #[arg(long, default_value_t = 3000)]
         port: u16,
+    },
+    /// Generate new outputs from a compose result
+    Generate {
+        /// Path to the index database
+        #[arg(long)]
+        db: String,
+        /// Seed file path
+        #[arg(long)]
+        seed: String,
+        /// Axis weights (same format as compose)
+        #[arg(long)]
+        axes: String,
+        /// Number of matches to use
+        #[arg(long, default_value_t = 10)]
+        count: usize,
+        /// Output directory
+        #[arg(long)]
+        output: String,
+        /// Target BPM for audio sequence (0 = use seed BPM)
+        #[arg(long, default_value_t = 0.0)]
+        target_bpm: f64,
+        /// Max seconds per clip in audio sequence
+        #[arg(long, default_value_t = 30.0)]
+        max_clip_secs: f64,
+        /// Crossfade seconds between clips
+        #[arg(long, default_value_t = 2.0)]
+        crossfade: f64,
+        /// Moodboard columns
+        #[arg(long, default_value_t = 5)]
+        columns: u32,
+        /// Skip audio sequence generation
+        #[arg(long)]
+        no_audio: bool,
+        /// Skip moodboard generation
+        #[arg(long)]
+        no_moodboard: bool,
+        /// Skip source file symlinking
+        #[arg(long)]
+        no_links: bool,
     },
     /// List all registered scoring axes with descriptions
     Axes,
@@ -148,7 +187,15 @@ async fn main() -> Result<()> {
                     let conn = Mutex::new(conn);
                     corpus_enrich::pipeline::enrich_images(&conn, concurrency)?;
                 }
-                other => bail!("Unknown domain: {other}. Available: audio, image"),
+                "text" => {
+                    let conn = Mutex::new(conn);
+                    corpus_enrich::pipeline::enrich_documents(&conn, concurrency)?;
+                }
+                "video" => {
+                    let conn = Mutex::new(conn);
+                    corpus_enrich::pipeline::enrich_videos(&conn, concurrency)?;
+                }
+                other => bail!("Unknown domain: {other}. Available: audio, image, text, video"),
             }
         }
         Commands::EnrichKeys {
@@ -317,6 +364,68 @@ async fn main() -> Result<()> {
         Commands::Serve { db, port } => {
             let conn = corpus_db::open_db(&db)?;
             corpus_ui::server::run(conn, port).await?;
+        }
+        Commands::Generate {
+            db,
+            seed,
+            axes,
+            count,
+            output,
+            target_bpm,
+            max_clip_secs,
+            crossfade,
+            columns,
+            no_audio,
+            no_moodboard,
+            no_links,
+        } => {
+            let conn = corpus_db::open_db(&db)?;
+            let registry = corpus_associate::AxisRegistry::new();
+            let weighted_axes = parse_axes(&axes, &registry)?;
+            let matches =
+                corpus_associate::matcher::find_matches(&conn, &seed, &weighted_axes, count)?;
+
+            if matches.is_empty() {
+                println!("No matches found. Has the seed file been enriched?");
+                return Ok(());
+            }
+
+            println!("Found {} matches, generating project...\n", matches.len());
+
+            let audio_config = corpus_generate::audio_sequence::SequenceConfig {
+                target_bpm: if target_bpm > 0.0 { Some(target_bpm) } else { None },
+                crossfade_secs: crossfade,
+                max_clip_secs,
+                ..Default::default()
+            };
+
+            let moodboard_config = corpus_generate::moodboard::MoodboardConfig {
+                columns,
+                ..Default::default()
+            };
+
+            let config = corpus_generate::project::ProjectConfig {
+                generate_audio: !no_audio,
+                generate_moodboard: !no_moodboard,
+                link_sources: !no_links,
+                audio_config,
+                moodboard_config,
+            };
+
+            let output_dir = std::path::Path::new(&output);
+            let result = corpus_generate::project::generate(
+                &conn, &seed, &matches, &config, output_dir,
+            )?;
+
+            println!("Project generated at: {}", result.project_dir.display());
+            if let Some(ref audio) = result.audio_output {
+                println!("  Audio sequence: {}", audio.display());
+            }
+            if let Some(ref mood) = result.moodboard_output {
+                println!("  Moodboard: {}", mood.display());
+            }
+            println!("  Sources linked: {}", result.sources_linked);
+            println!("  Manifest: {}", result.manifest_path.display());
         }
         Commands::Axes => {
             let registry = corpus_associate::AxisRegistry::new();

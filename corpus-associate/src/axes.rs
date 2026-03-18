@@ -14,14 +14,51 @@ pub struct ScoringContext {
 }
 
 impl ScoringContext {
-    /// Look up a numeric property value by key within the "audio" domain.
-    pub fn audio_num(&self, key: &str) -> Option<f64> {
-        self.properties.get(key).and_then(|p| p.value_num)
+    /// Look up a numeric property value by domain and key.
+    pub fn num(&self, domain: &str, key: &str) -> Option<f64> {
+        let lookup = format!("{domain}.{key}");
+        self.properties.get(&lookup).and_then(|p| p.value_num)
     }
 
-    /// Look up a text property value by key within the "audio" domain.
+    /// Look up a text property value by domain and key.
+    pub fn txt(&self, domain: &str, key: &str) -> Option<&str> {
+        let lookup = format!("{domain}.{key}");
+        self.properties.get(&lookup).and_then(|p| p.value_txt.as_deref())
+    }
+
+    /// Convenience: audio numeric property.
+    pub fn audio_num(&self, key: &str) -> Option<f64> {
+        self.num("audio", key)
+    }
+
+    /// Convenience: audio text property.
     pub fn audio_txt(&self, key: &str) -> Option<&str> {
-        self.properties.get(key).and_then(|p| p.value_txt.as_deref())
+        self.txt("audio", key)
+    }
+
+    /// Convenience: image numeric property.
+    pub fn image_num(&self, key: &str) -> Option<f64> {
+        self.num("image", key)
+    }
+
+    /// Convenience: image text property.
+    pub fn image_txt(&self, key: &str) -> Option<&str> {
+        self.txt("image", key)
+    }
+
+    /// Convenience: video numeric property.
+    pub fn video_num(&self, key: &str) -> Option<f64> {
+        self.num("video", key)
+    }
+
+    /// Convenience: text domain numeric property.
+    pub fn text_num(&self, key: &str) -> Option<f64> {
+        self.num("text", key)
+    }
+
+    /// Convenience: text domain text property.
+    pub fn text_txt(&self, key: &str) -> Option<&str> {
+        self.txt("text", key)
     }
 }
 
@@ -53,9 +90,18 @@ impl AxisRegistry {
     /// Create a registry pre-populated with the built-in axes.
     pub fn new() -> Self {
         let axes: Vec<Box<dyn Axis>> = vec![
+            // Audio axes
             Box::new(BpmAxis { max_diff: 20.0 }),
             Box::new(KeyAxis),
             Box::new(SpectralAxis { max_diff: 2000.0 }),
+            // Image axes
+            Box::new(BrightnessAxis),
+            Box::new(ColorTempAxis),
+            Box::new(PaletteAxis),
+            Box::new(HueAxis),
+            Box::new(AspectRatioAxis),
+            // Cross-modal axes
+            Box::new(DurationAxis),
             Box::new(TemporalAxis),
             Box::new(ProvenanceAxis),
         ];
@@ -451,6 +497,199 @@ impl Axis for ProvenanceAxis {
                 format!("shared depth {depth}")
             }
         }
+    }
+}
+
+// ===========================================================================
+// Image axes
+// ===========================================================================
+
+// ---- Brightness similarity -------------------------------------------------
+
+pub struct BrightnessAxis;
+
+impl Axis for BrightnessAxis {
+    fn name(&self) -> &str {
+        "brightness"
+    }
+    fn description(&self) -> &str {
+        "Brightness similarity — perceptual luminance proximity"
+    }
+    fn score(&self, seed: &ScoringContext, candidate: &ScoringContext) -> f64 {
+        let (Some(sv), Some(cv)) = (seed.image_num("brightness"), candidate.image_num("brightness")) else {
+            return 0.0;
+        };
+        if sv < 0.0 || cv < 0.0 {
+            return 0.0;
+        }
+        1.0 - (sv - cv).abs() // brightness is 0.0-1.0 so max diff is 1.0
+    }
+    fn explain(&self, seed: &ScoringContext, candidate: &ScoringContext) -> String {
+        let sv = seed.image_num("brightness").unwrap_or(0.0);
+        let cv = candidate.image_num("brightness").unwrap_or(0.0);
+        format!("{cv:.2} vs {sv:.2}, \u{0394}{:.2}", (sv - cv).abs())
+    }
+}
+
+// ---- Color temperature similarity ------------------------------------------
+
+pub struct ColorTempAxis;
+
+impl Axis for ColorTempAxis {
+    fn name(&self) -> &str {
+        "color_temp"
+    }
+    fn description(&self) -> &str {
+        "Color temperature similarity — warm/cool tone proximity"
+    }
+    fn score(&self, seed: &ScoringContext, candidate: &ScoringContext) -> f64 {
+        let (Some(sv), Some(cv)) = (
+            seed.image_num("color_temperature"),
+            candidate.image_num("color_temperature"),
+        ) else {
+            return 0.0;
+        };
+        // color_temperature ranges roughly -1.0 to 1.0, so max diff is 2.0
+        (1.0 - (sv - cv).abs() / 2.0).max(0.0)
+    }
+    fn explain(&self, seed: &ScoringContext, candidate: &ScoringContext) -> String {
+        let sv = seed.image_num("color_temperature").unwrap_or(0.0);
+        let cv = candidate.image_num("color_temperature").unwrap_or(0.0);
+        let label = if cv > 0.1 { "warm" } else if cv < -0.1 { "cool" } else { "neutral" };
+        format!("{cv:.2} ({label}), \u{0394}{:.2}", (sv - cv).abs())
+    }
+}
+
+// ---- Palette complexity similarity -----------------------------------------
+
+pub struct PaletteAxis;
+
+impl Axis for PaletteAxis {
+    fn name(&self) -> &str {
+        "palette"
+    }
+    fn description(&self) -> &str {
+        "Palette complexity similarity — how visually complex the color palette is"
+    }
+    fn score(&self, seed: &ScoringContext, candidate: &ScoringContext) -> f64 {
+        let (Some(sv), Some(cv)) = (
+            seed.image_num("palette_complexity"),
+            candidate.image_num("palette_complexity"),
+        ) else {
+            return 0.0;
+        };
+        // palette_complexity is 0-512 (number of distinct color buckets)
+        let max_diff = 300.0;
+        (1.0 - (sv - cv).abs() / max_diff).max(0.0)
+    }
+    fn explain(&self, seed: &ScoringContext, candidate: &ScoringContext) -> String {
+        let sv = seed.image_num("palette_complexity").unwrap_or(0.0);
+        let cv = candidate.image_num("palette_complexity").unwrap_or(0.0);
+        format!("{cv:.0} colors vs {sv:.0}, \u{0394}{:.0}", (sv - cv).abs())
+    }
+}
+
+// ---- Dominant hue similarity -----------------------------------------------
+
+pub struct HueAxis;
+
+impl Axis for HueAxis {
+    fn name(&self) -> &str {
+        "hue"
+    }
+    fn description(&self) -> &str {
+        "Dominant hue similarity — color wheel proximity"
+    }
+    fn score(&self, seed: &ScoringContext, candidate: &ScoringContext) -> f64 {
+        let (Some(sv), Some(cv)) = (
+            seed.image_num("dominant_hue"),
+            candidate.image_num("dominant_hue"),
+        ) else {
+            return 0.0;
+        };
+        // Hue is 0-360 degrees, wrapping
+        let diff = (sv - cv).abs();
+        let circular_diff = diff.min(360.0 - diff);
+        (1.0 - circular_diff / 180.0).max(0.0)
+    }
+    fn explain(&self, seed: &ScoringContext, candidate: &ScoringContext) -> String {
+        let sv = seed.image_num("dominant_hue").unwrap_or(0.0);
+        let cv = candidate.image_num("dominant_hue").unwrap_or(0.0);
+        let diff = (sv - cv).abs().min(360.0 - (sv - cv).abs());
+        format!("{cv:.0}\u{00b0} vs {sv:.0}\u{00b0}, \u{0394}{diff:.0}\u{00b0}")
+    }
+}
+
+// ---- Aspect ratio similarity -----------------------------------------------
+
+pub struct AspectRatioAxis;
+
+impl Axis for AspectRatioAxis {
+    fn name(&self) -> &str {
+        "aspect"
+    }
+    fn description(&self) -> &str {
+        "Aspect ratio similarity — matching landscape/portrait/square framing"
+    }
+    fn score(&self, seed: &ScoringContext, candidate: &ScoringContext) -> f64 {
+        // Check both image and video aspect ratios
+        let sv = seed.image_num("aspect_ratio")
+            .or_else(|| seed.video_num("aspect_ratio"));
+        let cv = candidate.image_num("aspect_ratio")
+            .or_else(|| candidate.video_num("aspect_ratio"));
+        let (Some(sv), Some(cv)) = (sv, cv) else {
+            return 0.0;
+        };
+        // Use log ratio for perceptual scaling: 16:9 vs 4:3 should be closer than 4:3 vs 1:1
+        let log_diff = (sv.ln() - cv.ln()).abs();
+        (1.0 - log_diff / 1.0).max(0.0) // ln(2.39/0.56) ≈ 1.45, so 1.0 gives good spread
+    }
+    fn explain(&self, seed: &ScoringContext, candidate: &ScoringContext) -> String {
+        let sv = seed.image_num("aspect_ratio")
+            .or_else(|| seed.video_num("aspect_ratio"))
+            .unwrap_or(1.0);
+        let cv = candidate.image_num("aspect_ratio")
+            .or_else(|| candidate.video_num("aspect_ratio"))
+            .unwrap_or(1.0);
+        let label = if cv > 1.2 { "landscape" } else if cv < 0.8 { "portrait" } else { "square" };
+        format!("{cv:.2} ({label}) vs {sv:.2}")
+    }
+}
+
+// ---- Duration similarity (cross-modal) -------------------------------------
+
+pub struct DurationAxis;
+
+impl Axis for DurationAxis {
+    fn name(&self) -> &str {
+        "duration"
+    }
+    fn description(&self) -> &str {
+        "Duration similarity — matching length of audio/video files"
+    }
+    fn score(&self, seed: &ScoringContext, candidate: &ScoringContext) -> f64 {
+        let sv = seed.audio_num("duration")
+            .or_else(|| seed.video_num("duration"));
+        let cv = candidate.audio_num("duration")
+            .or_else(|| candidate.video_num("duration"));
+        let (Some(sv), Some(cv)) = (sv, cv) else {
+            return 0.0;
+        };
+        if sv <= 0.0 || cv <= 0.0 {
+            return 0.0;
+        }
+        // Use ratio: if one is 2x the other, score is lower
+        let ratio = if sv > cv { sv / cv } else { cv / sv };
+        (1.0 - (ratio - 1.0) / 4.0).max(0.0) // ratio=5x → score=0
+    }
+    fn explain(&self, seed: &ScoringContext, candidate: &ScoringContext) -> String {
+        let sv = seed.audio_num("duration")
+            .or_else(|| seed.video_num("duration"))
+            .unwrap_or(0.0);
+        let cv = candidate.audio_num("duration")
+            .or_else(|| candidate.video_num("duration"))
+            .unwrap_or(0.0);
+        format!("{:.1}s vs {:.1}s", cv, sv)
     }
 }
 
