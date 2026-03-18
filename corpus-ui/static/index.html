@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Corpus</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header>
+    <h1>Corpus</h1>
+    <nav>
+      <button class="nav-btn active" data-view="compose">Compose</button>
+      <button class="nav-btn" data-view="search">Search</button>
+      <button class="nav-btn" data-view="stats">Stats</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Compose View -->
+    <section id="view-compose" class="view active">
+      <div class="compose-layout">
+        <div class="compose-controls">
+          <div class="field">
+            <label for="seed-path">Seed file path</label>
+            <input type="text" id="seed-path" placeholder="/path/to/file" />
+          </div>
+          <div class="axes-controls">
+            <h3>Axes</h3>
+            <div id="axes-sliders"></div>
+          </div>
+          <div class="field">
+            <label for="compose-count">Results</label>
+            <input type="number" id="compose-count" value="10" min="1" max="100" />
+          </div>
+          <button id="btn-compose" class="primary-btn">Compose</button>
+        </div>
+        <div class="compose-results">
+          <div id="seed-info" class="seed-info hidden"></div>
+          <div id="matches-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Search View -->
+    <section id="view-search" class="view">
+      <div class="search-bar">
+        <input type="text" id="search-q" placeholder="Filename search..." />
+        <input type="text" id="search-ext" placeholder="Extension (.wav)" />
+        <button id="btn-search" class="primary-btn">Search</button>
+      </div>
+      <div id="search-results"></div>
+    </section>
+
+    <!-- Stats View -->
+    <section id="view-stats" class="view">
+      <div id="stats-content"></div>
+    </section>
+  </main>
+
+  <!-- File detail modal -->
+  <div id="file-modal" class="modal hidden">
+    <div class="modal-content">
+      <button class="modal-close">&times;</button>
+      <div id="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- Audio player -->
+  <div id="audio-player" class="audio-player hidden">
+    <audio id="player" controls></audio>
+    <span id="player-name"></span>
+    <button id="player-close">&times;</button>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

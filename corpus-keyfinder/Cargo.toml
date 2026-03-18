@@ -1,0 +1,13 @@
+[package]
+name = "corpus-keyfinder"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+symphonia = { version = "0.5", features = ["all"] }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+cc = "1"

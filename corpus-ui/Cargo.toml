@@ -1,0 +1,17 @@
+[package]
+name = "corpus-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+corpus-db = { workspace = true }
+corpus-associate = { workspace = true }
+axum = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }

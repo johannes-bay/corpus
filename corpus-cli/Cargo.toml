@@ -1,0 +1,16 @@
+[package]
+name = "corpus-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+corpus-db = { workspace = true }
+corpus-enrich = { workspace = true }
+corpus-associate = { workspace = true }
+corpus-ui = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

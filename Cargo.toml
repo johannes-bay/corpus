@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = [
+    "corpus-db",
+    "corpus-keyfinder",
+    "corpus-enrich",
+    "corpus-associate",
+    "corpus-ui",
+    "corpus-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[workspace.dependencies]
+rusqlite = { version = "0.34", features = ["bundled", "blob"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+indicatif = "0.17"
+rayon = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+corpus-db = { path = "corpus-db" }
+corpus-enrich = { path = "corpus-enrich" }
+corpus-associate = { path = "corpus-associate" }
+corpus-keyfinder = { path = "corpus-keyfinder" }
+corpus-ui = { path = "corpus-ui" }
+image = "0.25"
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["fs", "cors"] }
