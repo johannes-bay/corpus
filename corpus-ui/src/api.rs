@@ -90,6 +90,14 @@ pub async fn stats(State(state): State<AppState>) -> Result<Json<StatsResponse>,
         enrichment.insert(format!("{domain}.{key}"), count);
     }
 
+    // Embedding counts
+    for model in &["clip:ViT-B-32", "clap:HTSAT-tiny"] {
+        let count = queries::count_embeddings(&db, model).unwrap_or(0);
+        if count > 0 {
+            enrichment.insert(format!("embedding:{model}"), count);
+        }
+    }
+
     Ok(Json(StatsResponse {
         total_files,
         audio_files,

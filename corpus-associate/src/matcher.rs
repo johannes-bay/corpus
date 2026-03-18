@@ -40,7 +40,17 @@ fn build_context(conn: &Connection, file: FileEntry) -> Result<ScoringContext> {
         let lookup = format!("{}.{}", p.domain, p.key);
         properties.insert(lookup, p);
     }
-    Ok(ScoringContext { file, properties })
+
+    // Load all embeddings for this file
+    let emb_rows = queries::get_embeddings(conn, &file.path)?;
+    let mut embeddings = HashMap::new();
+    for e in emb_rows {
+        if !e.vector.is_empty() {
+            embeddings.insert(e.model, e.vector);
+        }
+    }
+
+    Ok(ScoringContext { file, properties, embeddings })
 }
 
 // ---------------------------------------------------------------------------
@@ -120,6 +130,33 @@ pub fn find_matches(
                 continue;
             }
             candidate_files.entry(file.path.clone()).or_insert(file);
+        }
+    }
+
+    // Embedding-based candidate gathering: if visual/sonic axes are active
+    // and the seed has the corresponding embedding, gather candidates with
+    // that embedding model.
+    let embedding_models: Vec<&str> = axes.iter().filter_map(|wa| {
+        match wa.axis.name() {
+            "visual" => Some("clip:ViT-B-32"),
+            "sonic" => Some("clap:HTSAT-tiny"),
+            _ => None,
+        }
+    }).collect();
+
+    for model in &embedding_models {
+        if seed_ctx.embeddings.contains_key(*model) {
+            let paths = queries::find_paths_with_embedding(conn, model)?;
+            for path in paths {
+                if path == seed_path {
+                    continue;
+                }
+                if !candidate_files.contains_key(&path) {
+                    if let Ok(Some(file)) = queries::get_file(conn, &path) {
+                        candidate_files.insert(path, file);
+                    }
+                }
+            }
         }
     }
 

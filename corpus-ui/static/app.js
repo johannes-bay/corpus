@@ -2,8 +2,13 @@
 // Corpus UI — vanilla JS SPA
 // ---------------------------------------------------------------------------
 
-const AXES = ['bpm', 'key', 'spectral', 'temporal', 'provenance'];
-const DEFAULT_WEIGHTS = { bpm: 0.8, key: 0.9, spectral: 0.3, temporal: 0.5, provenance: 0.2 };
+const AXES = ['bpm', 'key', 'spectral', 'visual', 'sonic', 'brightness', 'hue', 'color_temp', 'palette', 'aspect', 'duration', 'temporal', 'provenance'];
+const DEFAULT_WEIGHTS = {
+  bpm: 0.8, key: 0.9, spectral: 0.3,
+  visual: 0.9, sonic: 0.9,
+  brightness: 0.5, hue: 0.4, color_temp: 0.3, palette: 0.2, aspect: 0.3,
+  duration: 0.3, temporal: 0.3, provenance: 0.2,
+};
 
 // State
 let ws = null;

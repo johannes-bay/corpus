@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-use crate::models::{AudioMeta, DocumentMeta, FileEntry, FontMeta, PhotoMeta, Property, VideoMeta};
+use crate::models::{AudioMeta, DocumentMeta, Embedding, FileEntry, FontMeta, PhotoMeta, Property, VideoMeta};
 
 fn row_to_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
     Ok(FileEntry {
@@ -335,4 +335,88 @@ pub fn count_enriched(conn: &Connection, domain: &str, key: &str) -> Result<i64>
         |row| row.get(0),
     )?;
     Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Embedding queries
+// ---------------------------------------------------------------------------
+
+/// Get a specific embedding for a file and model.
+pub fn get_embedding(conn: &Connection, path: &str, model: &str) -> Result<Option<Embedding>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, model, vector, dim FROM embeddings WHERE path = ?1 AND model = ?2",
+    )?;
+    let result = stmt.query_row(params![path, model], |row| {
+        let vector_blob: Vec<u8> = row.get("vector")?;
+        let dim: usize = row.get::<_, i64>("dim")? as usize;
+        let vector = bytes_to_f32(&vector_blob, dim);
+        Ok(Embedding {
+            path: row.get("path")?,
+            model: row.get("model")?,
+            vector,
+            dim,
+        })
+    });
+    match result {
+        Ok(e) => Ok(Some(e)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Get all embeddings for a file (all models).
+pub fn get_embeddings(conn: &Connection, path: &str) -> Result<Vec<Embedding>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, model, vector, dim FROM embeddings WHERE path = ?1",
+    )?;
+    let rows = stmt.query_map([path], |row| {
+        let vector_blob: Vec<u8> = row.get("vector")?;
+        let dim: usize = row.get::<_, i64>("dim")? as usize;
+        let vector = bytes_to_f32(&vector_blob, dim);
+        Ok(Embedding {
+            path: row.get("path")?,
+            model: row.get("model")?,
+            vector,
+            dim,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Count embeddings for a given model.
+pub fn count_embeddings(conn: &Connection, model: &str) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM embeddings WHERE model = ?1",
+        [model],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Find all file paths that have an embedding for a given model.
+pub fn find_paths_with_embedding(conn: &Connection, model: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT path FROM embeddings WHERE model = ?1",
+    )?;
+    let rows = stmt.query_map([model], |row| row.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Decode a little-endian f32 blob into a Vec<f32>.
+fn bytes_to_f32(blob: &[u8], dim: usize) -> Vec<f32> {
+    let expected_bytes = dim * 4;
+    if blob.len() < expected_bytes {
+        return Vec::new();
+    }
+    (0..dim)
+        .map(|i| {
+            let offset = i * 4;
+            f32::from_le_bytes([
+                blob[offset],
+                blob[offset + 1],
+                blob[offset + 2],
+                blob[offset + 3],
+            ])
+        })
+        .collect()
 }

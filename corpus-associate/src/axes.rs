@@ -11,6 +11,8 @@ use corpus_db::models::{FileEntry, Property};
 pub struct ScoringContext {
     pub file: FileEntry,
     pub properties: HashMap<String, Property>,
+    /// Embeddings keyed by model name (e.g. "clip:ViT-B-32", "clap:HTSAT-tiny").
+    pub embeddings: HashMap<String, Vec<f32>>,
 }
 
 impl ScoringContext {
@@ -104,6 +106,17 @@ impl AxisRegistry {
             Box::new(DurationAxis),
             Box::new(TemporalAxis),
             Box::new(ProvenanceAxis),
+            // Embedding axes (semantic similarity)
+            Box::new(EmbeddingAxis {
+                axis_name: "visual".to_string(),
+                model: "clip:ViT-B-32".to_string(),
+                desc: "Visual similarity via CLIP embeddings".to_string(),
+            }),
+            Box::new(EmbeddingAxis {
+                axis_name: "sonic".to_string(),
+                model: "clap:HTSAT-tiny".to_string(),
+                desc: "Sonic similarity via CLAP embeddings".to_string(),
+            }),
         ];
         Self { axes }
     }
@@ -693,6 +706,74 @@ impl Axis for DurationAxis {
     }
 }
 
+// ===========================================================================
+// Embedding axes (semantic similarity via vector cosine distance)
+// ===========================================================================
+
+/// Semantic similarity axis using pre-computed embeddings.
+/// Computes cosine similarity between the seed and candidate embedding vectors
+/// for a given model. Supports any embedding model (CLIP, CLAP, etc.).
+pub struct EmbeddingAxis {
+    /// Display name for this axis (e.g. "visual", "sonic").
+    pub axis_name: String,
+    /// The model key in the embeddings table (e.g. "clip:ViT-B-32").
+    pub model: String,
+    /// Human-readable description.
+    pub desc: String,
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0_f64;
+    let mut norm_a = 0.0_f64;
+    let mut norm_b = 0.0_f64;
+    for i in 0..a.len() {
+        let ai = a[i] as f64;
+        let bi = b[i] as f64;
+        dot += ai * bi;
+        norm_a += ai * ai;
+        norm_b += bi * bi;
+    }
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    if denom < 1e-12 {
+        return 0.0;
+    }
+    // Cosine similarity is in [-1, 1]. Map to [0, 1] for scoring.
+    // For normalized embeddings (CLIP/CLAP output), values are typically in [0, 1].
+    let cos = dot / denom;
+    cos.clamp(0.0, 1.0)
+}
+
+impl Axis for EmbeddingAxis {
+    fn name(&self) -> &str {
+        &self.axis_name
+    }
+    fn description(&self) -> &str {
+        &self.desc
+    }
+    fn score(&self, seed: &ScoringContext, candidate: &ScoringContext) -> f64 {
+        let (Some(sv), Some(cv)) = (
+            seed.embeddings.get(&self.model),
+            candidate.embeddings.get(&self.model),
+        ) else {
+            return 0.0;
+        };
+        cosine_similarity(sv, cv)
+    }
+    fn explain(&self, seed: &ScoringContext, candidate: &ScoringContext) -> String {
+        let (Some(sv), Some(cv)) = (
+            seed.embeddings.get(&self.model),
+            candidate.embeddings.get(&self.model),
+        ) else {
+            return "no embedding".to_string();
+        };
+        let sim = cosine_similarity(sv, cv);
+        format!("cosine {sim:.3} ({}-d)", sv.len())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -766,6 +847,31 @@ mod tests {
     #[test]
     fn test_provenance_sibling() {
         let s = provenance_score("/a/b/c", "/a/b/d");
-        assert!((s - 0.7).abs() < f64::EPSILON);
+        assert!((s - 0.5).abs() < 1e-10, "expected 0.5 (grandparent), got {s}");
+    }
+
+    #[test]
+    fn test_cosine_similarity_identical() {
+        let a = vec![1.0_f32, 0.0, 0.0];
+        let b = vec![1.0_f32, 0.0, 0.0];
+        let s = cosine_similarity(&a, &b);
+        assert!((s - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_cosine_similarity_orthogonal() {
+        let a = vec![1.0_f32, 0.0, 0.0];
+        let b = vec![0.0_f32, 1.0, 0.0];
+        let s = cosine_similarity(&a, &b);
+        assert!(s.abs() < 1e-6);
+    }
+
+    #[test]
+    fn test_cosine_similarity_similar() {
+        let a = vec![1.0_f32, 1.0, 0.0];
+        let b = vec![1.0_f32, 0.0, 0.0];
+        // cos(45°) ≈ 0.707
+        let s = cosine_similarity(&a, &b);
+        assert!((s - 0.7071).abs() < 0.01);
     }
 }
