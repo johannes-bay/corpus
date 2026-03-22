@@ -6,6 +6,15 @@ use corpus_db::models::{FileEntry, Property};
 // Scoring context — carries all data an axis might need
 // ---------------------------------------------------------------------------
 
+/// A named segment embedding vector for segment-level matching.
+#[derive(Debug, Clone)]
+pub struct SegmentVector {
+    pub segment_id: String,
+    pub label: Option<String>,
+    pub area_frac: Option<f64>,
+    pub vector: Vec<f32>,
+}
+
 /// Everything an axis needs to score a candidate against a seed.
 #[derive(Debug, Clone)]
 pub struct ScoringContext {
@@ -13,6 +22,8 @@ pub struct ScoringContext {
     pub properties: HashMap<String, Property>,
     /// Embeddings keyed by model name (e.g. "clip:ViT-B-32", "clap:HTSAT-tiny").
     pub embeddings: HashMap<String, Vec<f32>>,
+    /// Segment embeddings keyed by "{segment_type}:{model}" (e.g. "region:clip:ViT-B-32").
+    pub segment_embeddings: HashMap<String, Vec<SegmentVector>>,
 }
 
 impl ScoringContext {
@@ -116,6 +127,25 @@ impl AxisRegistry {
                 axis_name: "sonic".to_string(),
                 model: "clap:HTSAT-tiny".to_string(),
                 desc: "Sonic similarity via CLAP embeddings".to_string(),
+            }),
+            // Segment-level axes
+            Box::new(SegmentEmbeddingAxis {
+                axis_name: "objects".to_string(),
+                emb_model: "clip:ViT-B-32".to_string(),
+                segment_type: "region".to_string(),
+                desc: "Object/region similarity via SAM2 segments + CLIP".to_string(),
+            }),
+            Box::new(SegmentEmbeddingAxis {
+                axis_name: "vocals".to_string(),
+                emb_model: "clap:HTSAT-tiny".to_string(),
+                segment_type: "stem".to_string(),
+                desc: "Vocal/stem similarity via Demucs separation + CLAP".to_string(),
+            }),
+            Box::new(SegmentEmbeddingAxis {
+                axis_name: "scenes".to_string(),
+                emb_model: "clip:ViT-B-32".to_string(),
+                segment_type: "scene".to_string(),
+                desc: "Video scene similarity via keyframe CLIP embeddings".to_string(),
             }),
         ];
         Self { axes }
@@ -771,6 +801,102 @@ impl Axis for EmbeddingAxis {
         };
         let sim = cosine_similarity(sv, cv);
         format!("cosine {sim:.3} ({}-d)", sv.len())
+    }
+}
+
+// ===========================================================================
+// Segment embedding axes (sub-object semantic similarity)
+// ===========================================================================
+
+/// Segment-level similarity axis. Compares sub-file segments (image regions,
+/// audio stems, video scenes) using their individual embeddings.
+///
+/// Scoring: for each seed segment, find the best-matching candidate segment
+/// (by cosine similarity), then return the area-weighted average of those
+/// best matches. This answers "how much of seed's content is present in candidate?"
+pub struct SegmentEmbeddingAxis {
+    pub axis_name: String,
+    /// Embedding model (e.g. "clip:ViT-B-32").
+    pub emb_model: String,
+    /// Segment type (e.g. "region", "stem").
+    pub segment_type: String,
+    pub desc: String,
+}
+
+impl SegmentEmbeddingAxis {
+    /// Lookup key into ScoringContext::segment_embeddings.
+    fn seg_key(&self) -> String {
+        format!("{}:{}", self.segment_type, self.emb_model)
+    }
+}
+
+impl Axis for SegmentEmbeddingAxis {
+    fn name(&self) -> &str {
+        &self.axis_name
+    }
+    fn description(&self) -> &str {
+        &self.desc
+    }
+    fn score(&self, seed: &ScoringContext, candidate: &ScoringContext) -> f64 {
+        let key = self.seg_key();
+        let (Some(seed_segs), Some(cand_segs)) = (
+            seed.segment_embeddings.get(&key),
+            candidate.segment_embeddings.get(&key),
+        ) else {
+            return 0.0;
+        };
+        if seed_segs.is_empty() || cand_segs.is_empty() {
+            return 0.0;
+        }
+
+        // For each seed segment, find best matching candidate segment
+        let mut weighted_sum = 0.0;
+        let mut weight_total = 0.0;
+
+        for ss in seed_segs {
+            let weight = ss.area_frac.unwrap_or(1.0);
+            let best = cand_segs
+                .iter()
+                .map(|cs| cosine_similarity(&ss.vector, &cs.vector))
+                .fold(0.0_f64, f64::max);
+            weighted_sum += best * weight;
+            weight_total += weight;
+        }
+
+        if weight_total < 1e-12 {
+            return 0.0;
+        }
+        weighted_sum / weight_total
+    }
+
+    fn explain(&self, seed: &ScoringContext, candidate: &ScoringContext) -> String {
+        let key = self.seg_key();
+        let (Some(seed_segs), Some(cand_segs)) = (
+            seed.segment_embeddings.get(&key),
+            candidate.segment_embeddings.get(&key),
+        ) else {
+            return "no segments".to_string();
+        };
+
+        // Find the single best segment pair
+        let mut best_score = 0.0_f64;
+        let mut best_seed_label = None;
+        let mut best_cand_label = None;
+
+        for ss in seed_segs {
+            for cs in cand_segs {
+                let sim = cosine_similarity(&ss.vector, &cs.vector);
+                if sim > best_score {
+                    best_score = sim;
+                    best_seed_label = ss.label.as_deref().or(Some(&ss.segment_id));
+                    best_cand_label = cs.label.as_deref().or(Some(&cs.segment_id));
+                }
+            }
+        }
+
+        let sl = best_seed_label.unwrap_or("?");
+        let cl = best_cand_label.unwrap_or("?");
+        format!("best {best_score:.3} ({sl}\u{2194}{cl}), {}/{} segs", seed_segs.len(), cand_segs.len())
     }
 }
 

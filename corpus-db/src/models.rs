@@ -116,3 +116,29 @@ pub struct CompositionItem {
     pub score: Option<f64>,
     pub axes_detail: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Segment {
+    pub id: String,
+    pub path: String,
+    pub segment_type: String,
+    pub segment_key: String,
+    pub label: Option<String>,
+    pub bbox_x: Option<f64>,
+    pub bbox_y: Option<f64>,
+    pub bbox_w: Option<f64>,
+    pub bbox_h: Option<f64>,
+    pub time_start: Option<f64>,
+    pub time_end: Option<f64>,
+    pub confidence: Option<f64>,
+    pub area_frac: Option<f64>,
+    pub model: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SegmentEmbedding {
+    pub segment_id: String,
+    pub model: String,
+    pub vector: Vec<f32>,
+    pub dim: usize,
+}

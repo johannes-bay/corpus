@@ -37,6 +37,38 @@ const MIGRATIONS: &[&str] = &[
         axes_detail    TEXT,
         PRIMARY KEY (composition_id, path)
     );",
+    // Migration 3: segments, segment embeddings, and segment properties
+    "CREATE TABLE IF NOT EXISTS segments (
+        id           TEXT PRIMARY KEY,
+        path         TEXT NOT NULL REFERENCES files(path),
+        segment_type TEXT NOT NULL,
+        segment_key  TEXT NOT NULL,
+        label        TEXT,
+        bbox_x       REAL,
+        bbox_y       REAL,
+        bbox_w       REAL,
+        bbox_h       REAL,
+        time_start   REAL,
+        time_end     REAL,
+        confidence   REAL,
+        area_frac    REAL,
+        model        TEXT,
+        mask_rle     BLOB,
+        UNIQUE(path, segment_type, segment_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_segments_path ON segments(path);
+    CREATE INDEX IF NOT EXISTS idx_segments_type ON segments(segment_type);
+    CREATE INDEX IF NOT EXISTS idx_segments_path_type ON segments(path, segment_type);
+    CREATE INDEX IF NOT EXISTS idx_segments_label ON segments(label);
+
+    CREATE TABLE IF NOT EXISTS segment_embeddings (
+        segment_id TEXT NOT NULL REFERENCES segments(id),
+        model      TEXT NOT NULL,
+        vector     BLOB NOT NULL,
+        dim        INTEGER NOT NULL,
+        PRIMARY KEY (segment_id, model)
+    );
+    CREATE INDEX IF NOT EXISTS idx_segemb_model ON segment_embeddings(model);",
 ];
 
 /// Tracks which migrations have been applied.

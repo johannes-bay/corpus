@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use corpus_db::models::FileEntry;
 use corpus_db::queries;
 
-use crate::axes::{Axis, AxisRegistry, ScoringContext};
+use crate::axes::{Axis, AxisRegistry, ScoringContext, SegmentVector};
 use crate::explain::MatchExplanation;
 
 // ---------------------------------------------------------------------------
@@ -29,14 +29,27 @@ pub struct ScoredMatch {
 }
 
 // ---------------------------------------------------------------------------
+// Segment axis metadata — maps axis names to (segment_type, emb_model)
+// ---------------------------------------------------------------------------
+
+/// Check if an axis name is a segment axis and return its (segment_type, emb_model).
+fn segment_axis_info(name: &str) -> Option<(&'static str, &'static str)> {
+    match name {
+        "objects" => Some(("region", "clip:ViT-B-32")),
+        "vocals" => Some(("stem", "clap:HTSAT-tiny")),
+        "scenes" => Some(("scene", "clip:ViT-B-32")),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Building ScoringContexts
 // ---------------------------------------------------------------------------
 
-fn build_context(conn: &Connection, file: FileEntry) -> Result<ScoringContext> {
+fn build_context(conn: &Connection, file: FileEntry, seg_keys: &[String]) -> Result<ScoringContext> {
     let all_props = queries::get_properties(conn, &file.path)?;
     let mut properties = HashMap::new();
     for p in all_props {
-        // Key by "domain.key" so axes can look up any domain
         let lookup = format!("{}.{}", p.domain, p.key);
         properties.insert(lookup, p);
     }
@@ -50,7 +63,55 @@ fn build_context(conn: &Connection, file: FileEntry) -> Result<ScoringContext> {
         }
     }
 
-    Ok(ScoringContext { file, properties, embeddings })
+    // Load segment embeddings for requested segment types
+    let mut segment_embeddings: HashMap<String, Vec<SegmentVector>> = HashMap::new();
+    if !seg_keys.is_empty() {
+        // Parse seg_keys like "region:clip:ViT-B-32" into (segment_type, emb_model)
+        let mut types_models: Vec<(&str, &str)> = Vec::new();
+        for key in seg_keys {
+            if let Some((seg_type, rest)) = key.split_once(':') {
+                types_models.push((seg_type, rest));
+            }
+        }
+
+        for (seg_type, emb_model) in &types_models {
+            let segments = queries::get_segments_by_type(conn, &file.path, seg_type)?;
+            if segments.is_empty() {
+                continue;
+            }
+            let seg_ids: Vec<String> = segments.iter().map(|s| s.id.clone()).collect();
+            let seg_embs = queries::get_segment_embeddings(conn, &seg_ids, emb_model)?;
+
+            // Map segment_id -> embedding vector
+            let emb_map: HashMap<String, Vec<f32>> = seg_embs
+                .into_iter()
+                .map(|e| (e.segment_id, e.vector))
+                .collect();
+
+            let key = format!("{seg_type}:{emb_model}");
+            let vectors: Vec<SegmentVector> = segments
+                .into_iter()
+                .filter_map(|s| {
+                    let vector = emb_map.get(&s.id)?.clone();
+                    if vector.is_empty() {
+                        return None;
+                    }
+                    Some(SegmentVector {
+                        segment_id: s.id,
+                        label: s.label,
+                        area_frac: s.area_frac,
+                        vector,
+                    })
+                })
+                .collect();
+
+            if !vectors.is_empty() {
+                segment_embeddings.insert(key, vectors);
+            }
+        }
+    }
+
+    Ok(ScoringContext { file, properties, embeddings, segment_embeddings })
 }
 
 // ---------------------------------------------------------------------------
@@ -58,8 +119,6 @@ fn build_context(conn: &Connection, file: FileEntry) -> Result<ScoringContext> {
 // ---------------------------------------------------------------------------
 
 /// Find the top N matches for a given seed file.
-///
-/// The caller passes `WeightedAxis` references obtained from an `AxisRegistry`.
 pub fn find_matches(
     conn: &Connection,
     seed_path: &str,
@@ -72,12 +131,20 @@ pub fn find_matches(
         bail!("Seed file not found in database: {seed_path}");
     };
 
-    let seed_ctx = build_context(conn, seed_file)?;
+    // Determine which segment types we need
+    let seg_keys: Vec<String> = axes
+        .iter()
+        .filter_map(|wa| {
+            let (seg_type, emb_model) = segment_axis_info(wa.axis.name())?;
+            Some(format!("{seg_type}:{emb_model}"))
+        })
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let seed_ctx = build_context(conn, seed_file, &seg_keys)?;
 
     // --- Gather candidate files ---
-    // Detect the seed's domain from its enriched properties and gather
-    // candidates from the same domain. Also pull in cross-domain candidates
-    // if cross-modal axes are present.
     let mut candidate_files: HashMap<String, FileEntry> = HashMap::new();
 
     // Determine which domains the seed has properties in
@@ -97,17 +164,13 @@ pub fn find_matches(
     {
         let bpm_range = 40.0;
         let results = queries::find_by_property_range(
-            conn,
-            "audio",
-            "bpm",
-            seed_bpm - bpm_range,
-            seed_bpm + bpm_range,
+            conn, "audio", "bpm",
+            seed_bpm - bpm_range, seed_bpm + bpm_range,
         )?;
         for (file, _val) in results {
-            if file.path == seed_path {
-                continue;
+            if file.path != seed_path {
+                candidate_files.entry(file.path.clone()).or_insert(file);
             }
-            candidate_files.entry(file.path.clone()).or_insert(file);
         }
     }
 
@@ -119,23 +182,18 @@ pub fn find_matches(
     {
         let bright_range = 0.5;
         let results = queries::find_by_property_range(
-            conn,
-            "image",
-            "brightness",
+            conn, "image", "brightness",
             (seed_bright - bright_range).max(0.0),
             (seed_bright + bright_range).min(1.0),
         )?;
         for (file, _val) in results {
-            if file.path == seed_path {
-                continue;
+            if file.path != seed_path {
+                candidate_files.entry(file.path.clone()).or_insert(file);
             }
-            candidate_files.entry(file.path.clone()).or_insert(file);
         }
     }
 
-    // Embedding-based candidate gathering: if visual/sonic axes are active
-    // and the seed has the corresponding embedding, gather candidates with
-    // that embedding model.
+    // File-level embedding candidate gathering (visual/sonic)
     let embedding_models: Vec<&str> = axes.iter().filter_map(|wa| {
         match wa.axis.name() {
             "visual" => Some("clip:ViT-B-32"),
@@ -148,10 +206,7 @@ pub fn find_matches(
         if seed_ctx.embeddings.contains_key(*model) {
             let paths = queries::find_paths_with_embedding(conn, model)?;
             for path in paths {
-                if path == seed_path {
-                    continue;
-                }
-                if !candidate_files.contains_key(&path) {
+                if path != seed_path && !candidate_files.contains_key(&path) {
                     if let Ok(Some(file)) = queries::get_file(conn, &path) {
                         candidate_files.insert(path, file);
                     }
@@ -160,16 +215,31 @@ pub fn find_matches(
         }
     }
 
-    // If no candidates from pre-filters, fall back to gathering all enriched
-    // files from each domain the seed belongs to
+    // Segment-level candidate gathering (objects/vocals/scenes)
+    for wa in axes {
+        if let Some((seg_type, emb_model)) = segment_axis_info(wa.axis.name()) {
+            let seg_key = format!("{seg_type}:{emb_model}");
+            if seed_ctx.segment_embeddings.contains_key(&seg_key) {
+                let paths = queries::find_paths_with_segment_embeddings(conn, seg_type, emb_model)?;
+                for path in paths {
+                    if path != seed_path && !candidate_files.contains_key(&path) {
+                        if let Ok(Some(file)) = queries::get_file(conn, &path) {
+                            candidate_files.insert(path, file);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: gather all enriched files from seed's domains
     if candidate_files.is_empty() {
         for domain in &seed_domains {
             let files = queries::find_files_by_domain(conn, domain)?;
             for file in files {
-                if file.path == seed_path {
-                    continue;
+                if file.path != seed_path {
+                    candidate_files.entry(file.path.clone()).or_insert(file);
                 }
-                candidate_files.entry(file.path.clone()).or_insert(file);
             }
         }
     }
@@ -183,7 +253,7 @@ pub fn find_matches(
     let mut scored: Vec<ScoredMatch> = Vec::with_capacity(candidate_files.len());
 
     for (_path, file) in candidate_files {
-        let cand_ctx = match build_context(conn, file) {
+        let cand_ctx = match build_context(conn, file, &seg_keys) {
             Ok(c) => c,
             Err(_) => continue,
         };
@@ -225,8 +295,7 @@ pub fn find_matches(
     Ok(scored)
 }
 
-/// Convenience wrapper that accepts axis names + weights as string pairs
-/// and resolves them through the registry. Returns an error for unknown names.
+/// Convenience wrapper that accepts axis names + weights as string pairs.
 pub fn find_matches_by_name(
     conn: &Connection,
     registry: &AxisRegistry,

@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-use crate::models::{AudioMeta, DocumentMeta, Embedding, FileEntry, FontMeta, PhotoMeta, Property, VideoMeta};
+use crate::models::{AudioMeta, DocumentMeta, Embedding, FileEntry, FontMeta, PhotoMeta, Property, Segment, SegmentEmbedding, VideoMeta};
 
 fn row_to_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
     Ok(FileEntry {
@@ -401,6 +401,141 @@ pub fn find_paths_with_embedding(conn: &Connection, model: &str) -> Result<Vec<S
     let rows = stmt.query_map([model], |row| row.get::<_, String>(0))?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
+
+// ---------------------------------------------------------------------------
+// Segment queries
+// ---------------------------------------------------------------------------
+
+/// Get all segments for a file.
+pub fn get_segments(conn: &Connection, path: &str) -> Result<Vec<Segment>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, segment_type, segment_key, label,
+                bbox_x, bbox_y, bbox_w, bbox_h,
+                time_start, time_end, confidence, area_frac, model
+         FROM segments WHERE path = ?1",
+    )?;
+    let rows = stmt.query_map([path], |row| {
+        Ok(Segment {
+            id: row.get("id")?,
+            path: row.get("path")?,
+            segment_type: row.get("segment_type")?,
+            segment_key: row.get("segment_key")?,
+            label: row.get("label")?,
+            bbox_x: row.get("bbox_x")?,
+            bbox_y: row.get("bbox_y")?,
+            bbox_w: row.get("bbox_w")?,
+            bbox_h: row.get("bbox_h")?,
+            time_start: row.get("time_start")?,
+            time_end: row.get("time_end")?,
+            confidence: row.get("confidence")?,
+            area_frac: row.get("area_frac")?,
+            model: row.get("model")?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Get segments of a specific type for a file.
+pub fn get_segments_by_type(conn: &Connection, path: &str, segment_type: &str) -> Result<Vec<Segment>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, path, segment_type, segment_key, label,
+                bbox_x, bbox_y, bbox_w, bbox_h,
+                time_start, time_end, confidence, area_frac, model
+         FROM segments WHERE path = ?1 AND segment_type = ?2",
+    )?;
+    let rows = stmt.query_map(params![path, segment_type], |row| {
+        Ok(Segment {
+            id: row.get("id")?,
+            path: row.get("path")?,
+            segment_type: row.get("segment_type")?,
+            segment_key: row.get("segment_key")?,
+            label: row.get("label")?,
+            bbox_x: row.get("bbox_x")?,
+            bbox_y: row.get("bbox_y")?,
+            bbox_w: row.get("bbox_w")?,
+            bbox_h: row.get("bbox_h")?,
+            time_start: row.get("time_start")?,
+            time_end: row.get("time_end")?,
+            confidence: row.get("confidence")?,
+            area_frac: row.get("area_frac")?,
+            model: row.get("model")?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Get segment embeddings for a list of segment IDs.
+pub fn get_segment_embeddings(conn: &Connection, segment_ids: &[String], model: &str) -> Result<Vec<SegmentEmbedding>> {
+    if segment_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders: String = segment_ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT segment_id, model, vector, dim FROM segment_embeddings WHERE segment_id IN ({placeholders}) AND model = ?{}",
+        segment_ids.len() + 1
+    );
+    let mut stmt = conn.prepare(&sql)?;
+
+    let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    for id in segment_ids {
+        param_values.push(Box::new(id.clone()));
+    }
+    param_values.push(Box::new(model.to_string()));
+    let params: Vec<&dyn rusqlite::types::ToSql> = param_values.iter().map(|p| p.as_ref()).collect();
+
+    let rows = stmt.query_map(&*params, |row| {
+        let vector_blob: Vec<u8> = row.get("vector")?;
+        let dim: usize = row.get::<_, i64>("dim")? as usize;
+        let vector = bytes_to_f32(&vector_blob, dim);
+        Ok(SegmentEmbedding {
+            segment_id: row.get("segment_id")?,
+            model: row.get("model")?,
+            vector,
+            dim,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Find all file paths that have segments of a given type with embeddings for a model.
+pub fn find_paths_with_segment_embeddings(
+    conn: &Connection,
+    segment_type: &str,
+    emb_model: &str,
+) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT s.path
+         FROM segments s
+         JOIN segment_embeddings se ON se.segment_id = s.id
+         WHERE s.segment_type = ?1 AND se.model = ?2",
+    )?;
+    let rows = stmt.query_map(params![segment_type, emb_model], |row| row.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Count segments by type.
+pub fn count_segments(conn: &Connection, segment_type: &str) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM segments WHERE segment_type = ?1",
+        [segment_type],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
+/// Count segment embeddings by model.
+pub fn count_segment_embeddings(conn: &Connection, model: &str) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM segment_embeddings WHERE model = ?1",
+        [model],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 /// Decode a little-endian f32 blob into a Vec<f32>.
 fn bytes_to_f32(blob: &[u8], dim: usize) -> Vec<f32> {
