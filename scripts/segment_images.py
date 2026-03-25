@@ -94,10 +94,11 @@ def mask_to_rle(mask: np.ndarray) -> bytes:
 def main():
     parser = argparse.ArgumentParser(description="Segment images with SAM2 + CLIP")
     parser.add_argument("--db", required=True, help="Path to corpus database")
-    parser.add_argument("--max-masks", type=int, default=20, help="Max masks per image")
+    parser.add_argument("--max-masks", type=int, default=10, help="Max masks per image")
     parser.add_argument("--min-area", type=float, default=0.01, help="Min mask area fraction")
     parser.add_argument("--max-area", type=float, default=0.95, help="Max mask area fraction")
     parser.add_argument("--batch-size", type=int, default=64, help="CLIP batch size")
+    parser.add_argument("--max-dim", type=int, default=1024, help="Max image dimension for SAM2 (resize larger)")
     args = parser.parse_args()
 
     device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
@@ -108,10 +109,10 @@ def main():
     from sam2.build_sam import build_sam2
     from sam2.automatic_mask_generator import SAM2AutomaticMaskGenerator
 
-    sam2 = build_sam2("sam2.1_hiera_large.yaml", "sam2.1_hiera_large.pt", device=device)
+    sam2 = build_sam2("configs/sam2.1/sam2.1_hiera_s.yaml", "sam2.1_hiera_small.pt", device=device)
     mask_generator = SAM2AutomaticMaskGenerator(
         model=sam2,
-        points_per_side=32,
+        points_per_side=8,          # 64 points: fast, still catches main objects
         pred_iou_thresh=0.7,
         stability_score_thresh=0.8,
         min_mask_region_area=100,
@@ -148,11 +149,23 @@ def main():
         try:
             # Load image
             img = Image.open(path).convert("RGB")
-            img_np = np.array(img)
+            orig_w, orig_h = img.size
+
+            # Resize for SAM2 if too large (saves VRAM)
+            max_dim = args.max_dim
+            if max(orig_w, orig_h) > max_dim:
+                scale = max_dim / max(orig_w, orig_h)
+                new_w, new_h = int(orig_w * scale), int(orig_h * scale)
+                sam_img = img.resize((new_w, new_h), Image.LANCZOS)
+            else:
+                sam_img = img
+                scale = 1.0
+
+            img_np = np.array(sam_img)
             h, w = img_np.shape[:2]
             total_pixels = h * w
 
-            # Generate masks
+            # Generate masks on (possibly resized) image
             masks = mask_generator.generate(img_np)
 
             # Filter by area
@@ -179,9 +192,9 @@ def main():
                 seg_key = f"mask_{i}"
                 sid = segment_id(path, "region", seg_key)
 
-                bbox = mask_data['bbox']  # [x, y, w, h] in pixels
+                bbox = mask_data['bbox']  # [x, y, w, h] in pixels (of resized image)
                 bx, by, bw, bh = bbox
-                # Normalize to 0-1
+                # Normalize to 0-1 (resolution-independent)
                 nx, ny, nw, nh = bx / w, by / h, bw / w, bh / h
 
                 area_frac = mask_data['area'] / total_pixels
@@ -190,13 +203,15 @@ def main():
                 # RLE encode mask
                 rle = mask_to_rle(mask_data['segmentation'])
 
-                # Crop bounding box region
-                x1, y1 = int(bx), int(by)
-                x2, y2 = min(int(bx + bw), w), min(int(by + bh), h)
-                if x2 <= x1 or y2 <= y1:
+                # Crop from ORIGINAL image for best CLIP quality
+                ox1 = int(nx * orig_w)
+                oy1 = int(ny * orig_h)
+                ox2 = min(int((nx + nw) * orig_w), orig_w)
+                oy2 = min(int((ny + nh) * orig_h), orig_h)
+                if ox2 <= ox1 or oy2 <= oy1:
                     continue
 
-                crop = img.crop((x1, y1, x2, y2))
+                crop = img.crop((ox1, oy1, ox2, oy2))
                 crops.append((sid, crop))
 
                 seg_rows.append((

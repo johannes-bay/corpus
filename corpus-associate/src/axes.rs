@@ -147,6 +147,12 @@ impl AxisRegistry {
                 segment_type: "scene".to_string(),
                 desc: "Video scene similarity via keyframe CLIP embeddings".to_string(),
             }),
+            Box::new(SegmentEmbeddingAxis {
+                axis_name: "concepts".to_string(),
+                emb_model: "clip:ViT-B-32".to_string(),
+                segment_type: "chunk".to_string(),
+                desc: "Text concept similarity via CLIP text embeddings — cross-modal with images".to_string(),
+            }),
         ];
         Self { axes }
     }

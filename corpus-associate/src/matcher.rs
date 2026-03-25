@@ -38,6 +38,7 @@ fn segment_axis_info(name: &str) -> Option<(&'static str, &'static str)> {
         "objects" => Some(("region", "clip:ViT-B-32")),
         "vocals" => Some(("stem", "clap:HTSAT-tiny")),
         "scenes" => Some(("scene", "clip:ViT-B-32")),
+        "concepts" => Some(("chunk", "clip:ViT-B-32")),
         _ => None,
     }
 }
