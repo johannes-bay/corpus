@@ -49,17 +49,17 @@ def get_pending_paths(db_path: str, min_duration: float) -> list[tuple[str, floa
     conn = sqlite3.connect(db_path)
     exts = ','.join(f"'{e}'" for e in AUDIO_EXTENSIONS)
 
-    # Get files with known duration above threshold, not yet segmented
+    # Duration is stored in properties table as audio.duration
     query = f"""
-        SELECT f.path, am.duration_secs
+        SELECT f.path, p.value_num
         FROM files f
-        JOIN audio_meta am ON am.path = f.path
+        JOIN properties p ON p.path = f.path AND p.domain = 'audio' AND p.key = 'duration'
         WHERE f.extension IN ({exts})
-        AND am.duration_secs >= ?
+        AND p.value_num >= ?
         AND f.path NOT IN (
             SELECT DISTINCT s.path FROM segments s WHERE s.model = ?
         )
-        ORDER BY am.duration_secs DESC
+        ORDER BY p.value_num DESC
     """
     rows = conn.execute(query, (min_duration, DEMUCS_MODEL)).fetchall()
     conn.close()
