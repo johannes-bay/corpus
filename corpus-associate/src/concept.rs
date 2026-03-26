@@ -50,6 +50,39 @@ const DECAY_CO_ARTIST: f64 = 0.5;
 const DECAY_NEIGHBOR: f64 = 0.35;
 const CONVERGENCE_BONUS: f64 = 0.1;
 
+/// Topology-based intentionality multiplier.
+/// Files in deliberately curated contexts get boosted;
+/// files in system/accidental contexts get dampened.
+fn topology_weight(conn: &Connection, path: &str) -> f64 {
+    // Look up topology for any file in the same folder
+    let folder = path.rsplit_once('/').map(|(f, _)| f).unwrap_or(path);
+    let result = conn.query_row(
+        "SELECT value_txt FROM properties WHERE domain = 'topology' AND key = 'type' AND path IN (SELECT path FROM files WHERE parent_folder = ?1 LIMIT 1)",
+        [folder],
+        |row| row.get::<_, String>(0),
+    );
+    match result.as_deref() {
+        Ok("production-session") => 1.4,
+        Ok("curated-images") => 1.3,
+        Ok("reference-collection") => 1.3,
+        Ok("work-project") => 1.2,
+        Ok("design-project") => 1.2,
+        Ok("personal-photos") => 1.1,
+        Ok("document-collection") => 1.1,
+        Ok("video-project") => 1.1,
+        Ok("music-collection") => 1.0,
+        Ok("album-rip") => 1.0,
+        Ok("camera-dump") => 0.9,
+        Ok("export-output") => 0.8,
+        Ok("sample-library") => 0.8,
+        Ok("archive") => 0.7,
+        Ok("download-accumulation") => 0.6,
+        Ok("batch-export") => 0.5,
+        Ok("system-artifact") => 0.3,
+        _ => 1.0,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Internal state for graph traversal
 // ---------------------------------------------------------------------------
@@ -246,12 +279,14 @@ pub fn concept_query(
 
     tracing::info!("Phase 2: {} total candidates after traversal", candidates.len());
 
-    // ---- Phase 3: Rank and return ----
+    // ---- Phase 3: Apply topology weighting and rank ----
 
     let mut results: Vec<ConceptMatch> = candidates
         .into_values()
         .map(|c| {
-            let score = c.final_score();
+            let base_score = c.final_score();
+            let topo_w = topology_weight(conn, &c.file.path);
+            let score = (base_score * topo_w).min(1.0);
             ConceptMatch {
                 file: c.file,
                 concept_score: score,
