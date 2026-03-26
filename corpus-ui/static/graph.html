@@ -751,85 +751,128 @@ async function fetchAndStreamSegments() {
   const W = window.innerWidth;
   const H = window.innerHeight;
 
+  // Collect all discovered nodes from the graph
+  const nodeList = [...nodes.values()].sort((a, b) => b.score - a.score);
+  const imageNodes = nodeList.filter(n => n.type === 'image');
+  const audioNodes = nodeList.filter(n => n.type === 'audio');
+  const textNodes = nodeList.filter(n => n.type === 'text');
+  const videoNodes = nodeList.filter(n => n.type === 'video');
+
+  // Try to fetch image segments from crop server
+  let segments = [];
   try {
-    const res = await fetch(`${CROP_SERVER}/segments?q=${encodeURIComponent(query)}&count=300`);
-    const segments = await res.json();
+    const res = await fetch(`${CROP_SERVER}/segments?q=${encodeURIComponent(query)}&count=200`);
+    segments = await res.json();
+  } catch (e) {
+    console.log('Crop server unavailable, using nodes only');
+  }
 
+  const totalItems = segments.length + audioNodes.length + textNodes.length + imageNodes.length;
+  document.getElementById('compose-status').textContent = `Assembling ${totalItems} elements...`;
+
+  let placed = 0;
+  const sources = new Set();
+
+  function placeElement(el) {
+    makeDraggable(el);
+    view.appendChild(el);
+    placed++;
     document.getElementById('compose-status').textContent =
-      `Streaming ${segments.length} segments...`;
+      `${placed} elements from ${sources.size} sources`;
+  }
 
-    let placed = 0;
-    const sources = new Set();
+  // Stream all content types
+  let itemIndex = 0;
+  const allItems = [];
 
-    function placeNext() {
-      if (placed >= segments.length) {
-        document.getElementById('compose-status').textContent =
-          `${placed} segments from ${sources.size} sources`;
-        return;
-      }
+  // Image segments (crops)
+  for (const seg of segments) {
+    allItems.push({type: 'segment', data: seg});
+  }
+  // Full images (for concepts without segments)
+  for (const n of imageNodes.slice(0, 30)) {
+    allItems.push({type: 'image', data: n});
+  }
+  // Audio nodes
+  for (const n of audioNodes.slice(0, 20)) {
+    allItems.push({type: 'audio', data: n});
+  }
+  // Text nodes
+  for (const n of textNodes.slice(0, 15)) {
+    allItems.push({type: 'text', data: n});
+  }
 
-      const seg = segments[placed];
-      const img = document.createElement('img');
-      img.className = 'segment-crop';
-      img.src = `${CROP_SERVER}/crop?path=${encodeURIComponent(seg.path)}&bx=${seg.bx}&by=${seg.by}&bw=${seg.bw}&bh=${seg.bh}`;
+  // Shuffle to mix types
+  for (let i = allItems.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [allItems[i], allItems[j]] = [allItems[j], allItems[i]];
+  }
 
-      // Size based on area (larger segments = bigger)
-      const area = seg.area || 0.1;
-      const baseSize = 60 + area * 300;
-      const size = baseSize + Math.random() * 40;
-
-      // Position — spread across canvas, anchors more central
-      const cx = seg.anchor
-        ? W/2 + (Math.random() - 0.5) * W * 0.4
-        : Math.random() * W;
-      const cy = seg.anchor
-        ? H/2 + (Math.random() - 0.5) * H * 0.4
-        : Math.random() * H;
-
-      // Random rotation
-      const angle = (Math.random() - 0.5) * 50;
-
-      // Opacity — anchors brighter
-      const opacity = seg.anchor ? 0.7 + Math.random() * 0.3 : 0.3 + area * 0.5;
-
-      // Depth — larger segments behind
-      const zIndex = Math.floor(100 - area * 50 + Math.random() * 20);
-
-      img.style.cssText = `
-        left: ${cx - size/2}px; top: ${cy - size/2}px;
-        width: ${size}px; height: auto; max-height: ${size * 1.5}px;
-        object-fit: cover; opacity: 0;
-        transform: rotate(${angle}deg);
-        z-index: ${zIndex};
-      `;
-
-      // Fade in on load
-      img.onload = () => {
-        img.style.opacity = opacity;
-      };
-      img.onerror = () => {
-        img.remove();
-      };
-
-      // Make draggable
-      makeDraggable(img);
-
-      view.appendChild(img);
-      sources.add(seg.path);
-      placed++;
-
+  function streamNext() {
+    if (itemIndex >= allItems.length) {
       document.getElementById('compose-status').textContent =
-        `${placed}/${segments.length} segments from ${sources.size} sources`;
-
-      // Stream delay — fast at first, then slower
-      const delay = placed < 30 ? 30 : placed < 100 ? 60 : 100;
-      setTimeout(placeNext, delay);
+        `${placed} elements from ${sources.size} sources — done`;
+      return;
     }
 
-    placeNext();
-  } catch (e) {
-    document.getElementById('compose-status').textContent = 'Error: ' + e.message;
+    const item = allItems[itemIndex++];
+    const cx = W/2 + (Math.random() - 0.5) * W * 0.7;
+    const cy = H/2 + (Math.random() - 0.5) * H * 0.7;
+    const angle = (Math.random() - 0.5) * 40;
+
+    if (item.type === 'segment') {
+      const seg = item.data;
+      const el = document.createElement('img');
+      el.className = 'segment-crop';
+      el.src = `${CROP_SERVER}/crop?path=${encodeURIComponent(seg.path)}&bx=${seg.bx}&by=${seg.by}&bw=${seg.bw}&bh=${seg.bh}`;
+      const size = 60 + (seg.area || 0.1) * 300 + Math.random() * 40;
+      el.style.cssText = `left:${cx-size/2}px;top:${cy-size/2}px;width:${size}px;height:auto;max-height:${size*1.5}px;object-fit:cover;opacity:0;transform:rotate(${angle}deg);z-index:${Math.floor(50+Math.random()*50)};`;
+      el.onload = () => { el.style.opacity = seg.anchor ? 0.8 : 0.4 + (seg.area||0.1)*0.4; };
+      el.onerror = () => el.remove();
+      placeElement(el);
+      sources.add(seg.path);
+
+    } else if (item.type === 'image') {
+      const n = item.data;
+      const el = document.createElement('img');
+      el.className = 'segment-crop';
+      el.src = `${CROP_SERVER}/preview?path=${encodeURIComponent(n.path)}`;
+      const size = 100 + n.score * 200;
+      el.style.cssText = `left:${cx-size/2}px;top:${cy-size/2}px;width:${size}px;height:auto;max-height:${size}px;object-fit:cover;opacity:0;transform:rotate(${angle}deg);z-index:${Math.floor(30+Math.random()*30)};border-radius:4px;`;
+      el.onload = () => { el.style.opacity = 0.5 + n.score * 0.4; };
+      el.onerror = () => el.remove();
+      placeElement(el);
+      sources.add(n.path);
+
+    } else if (item.type === 'audio') {
+      const n = item.data;
+      const el = document.createElement('div');
+      el.className = 'segment-crop';
+      const size = 120 + n.score * 100;
+      const color = n.isAnchor ? '124,58,237' : '90,50,180';
+      el.style.cssText = `left:${cx-size/2}px;top:${cy-20}px;width:${size}px;padding:10px 14px;background:rgba(${color},0.25);border:1px solid rgba(${color},0.5);border-radius:8px;opacity:0;transform:rotate(${angle*0.3}deg);z-index:${Math.floor(60+Math.random()*30)};cursor:grab;transition:opacity 0.5s;`;
+      el.innerHTML = `<div style="font-size:11px;color:rgba(255,255,255,0.4)">♪</div><div style="font-size:12px;color:rgba(255,255,255,0.8);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${n.filename}</div>`;
+      setTimeout(() => { el.style.opacity = 0.6 + n.score * 0.3; }, 50);
+      placeElement(el);
+      sources.add(n.path);
+
+    } else if (item.type === 'text') {
+      const n = item.data;
+      const el = document.createElement('div');
+      el.className = 'segment-crop';
+      const width = 200 + Math.random() * 200;
+      el.style.cssText = `left:${cx-width/2}px;top:${cy-15}px;width:${width}px;padding:8px 12px;background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:6px;opacity:0;transform:rotate(${angle*0.2}deg);z-index:${Math.floor(40+Math.random()*30)};cursor:grab;transition:opacity 0.5s;`;
+      el.innerHTML = `<div style="font-size:10px;color:rgba(245,158,11,0.5)">doc</div><div style="font-size:12px;color:rgba(255,255,255,0.7);margin-top:2px">${n.filename}</div>`;
+      setTimeout(() => { el.style.opacity = 0.5 + n.score * 0.3; }, 50);
+      placeElement(el);
+      sources.add(n.path);
+    }
+
+    const delay = placed < 20 ? 40 : placed < 80 ? 70 : 120;
+    setTimeout(streamNext, delay);
   }
+
+  streamNext();
 }
 
 function makeDraggable(el) {

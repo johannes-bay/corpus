@@ -29,6 +29,10 @@ pub struct ConceptQueryOpts {
     pub max_depth: usize,
     pub score_floor: f64,
     pub fan_out: usize,
+    /// Additional anchors from visual embedding search (path, score).
+    /// These are files whose visual content matches the concept,
+    /// discovered outside the FTS index via CLIP/SigLIP text→image search.
+    pub visual_anchors: Vec<(String, f64)>,
 }
 
 impl Default for ConceptQueryOpts {
@@ -38,6 +42,7 @@ impl Default for ConceptQueryOpts {
             max_depth: 2,
             score_floor: 0.05,
             fan_out: 50,
+            visual_anchors: Vec::new(),
         }
     }
 }
@@ -159,7 +164,21 @@ pub fn concept_query(
         }
     }
 
-    tracing::info!("Phase 1: {} anchors from FTS", candidates.len());
+    // 1b. Visual anchors from embedding search (CLIP/SigLIP text→image)
+    for (path, sim) in &opts.visual_anchors {
+        if let Ok(Some(file)) = queries::get_file(conn, path) {
+            let entry = candidates.entry(path.clone()).or_insert_with(|| CandidateInfo {
+                file,
+                score: 0.0,
+                sources: Vec::new(),
+                edge_types: std::collections::HashSet::new(),
+            });
+            // Visual anchors scored lower than FTS (one signal among many)
+            entry.add_source("anchor:visual", None, sim * 0.6);
+        }
+    }
+
+    tracing::info!("Phase 1: {} anchors ({} FTS + {} visual)", candidates.len(), fts_hits.len(), opts.visual_anchors.len());
 
     // ---- Phase 2: Edge Traversal ----
 
@@ -251,8 +270,8 @@ pub fn concept_query(
                 }
             }
 
-            // Embedding neighbor edges
-            for model in &["clip:ViT-B-32", "clap:HTSAT-tiny"] {
+            // Embedding neighbor edges (same-modal + cross-modal)
+            for model in &["clip:ViT-B-32", "clap:HTSAT-tiny", "cross:text→image"] {
                 if let Ok(neighbors) = queries::get_neighbors(conn, path, model, 20) {
                     for nb in neighbors {
                         let propagated = parent_score * DECAY_NEIGHBOR * nb.similarity;
