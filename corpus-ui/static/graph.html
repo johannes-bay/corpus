@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Corpus — Concept Graph</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0f; color: #e0e0e8; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; overflow: hidden; }
+
+#canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; }
+
+#controls {
+  position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+  display: flex; gap: 12px; align-items: center; z-index: 10;
+  background: rgba(10,10,18,0.85); backdrop-filter: blur(12px);
+  padding: 12px 20px; border-radius: 12px; border: 1px solid rgba(124,58,237,0.3);
+}
+#query {
+  background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
+  color: #e0e0e8; padding: 10px 16px; border-radius: 8px; font-size: 16px;
+  width: 320px; outline: none;
+}
+#query:focus { border-color: #7c3aed; }
+#query::placeholder { color: rgba(255,255,255,0.3); }
+#btn-play, #btn-stop {
+  padding: 10px 20px; border-radius: 8px; border: none; font-size: 14px;
+  cursor: pointer; font-weight: 600; transition: all 0.2s;
+}
+#btn-play { background: #7c3aed; color: white; }
+#btn-play:hover { background: #6d28d9; }
+#btn-play.active { background: #ef4444; }
+#btn-stop { background: rgba(255,255,255,0.1); color: #e0e0e8; }
+#btn-stop:hover { background: rgba(255,255,255,0.2); }
+
+#status {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  background: rgba(10,10,18,0.85); backdrop-filter: blur(12px);
+  padding: 10px 20px; border-radius: 8px; font-size: 13px; color: rgba(255,255,255,0.5);
+  border: 1px solid rgba(255,255,255,0.08); z-index: 10;
+}
+
+#sidebar {
+  position: fixed; right: 0; top: 0; width: 360px; height: 100vh;
+  background: rgba(10,10,18,0.92); backdrop-filter: blur(12px);
+  border-left: 1px solid rgba(255,255,255,0.08); z-index: 10;
+  transform: translateX(100%); transition: transform 0.3s;
+  overflow-y: auto; padding: 20px;
+}
+#sidebar.open { transform: translateX(0); }
+#sidebar h3 { font-size: 14px; color: #7c3aed; margin-bottom: 8px; }
+#sidebar .preview-img { width: 100%; border-radius: 8px; margin-bottom: 12px; }
+#sidebar .meta { font-size: 12px; color: rgba(255,255,255,0.5); margin-bottom: 4px; }
+#sidebar .source-tag {
+  display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+  margin: 2px; background: rgba(124,58,237,0.2); color: #a78bfa;
+}
+#sidebar .close-btn {
+  position: absolute; top: 12px; right: 12px; background: none; border: none;
+  color: rgba(255,255,255,0.5); cursor: pointer; font-size: 18px;
+}
+
+#compose-panel {
+  position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+  background: rgba(10,10,18,0.92); backdrop-filter: blur(12px);
+  padding: 16px 24px; border-radius: 12px; border: 1px solid rgba(124,58,237,0.3);
+  z-index: 10; display: none; text-align: center;
+}
+#compose-panel h4 { color: #7c3aed; margin-bottom: 8px; font-size: 14px; }
+#compose-panel .stats { font-size: 13px; color: rgba(255,255,255,0.5); margin-bottom: 12px; }
+#btn-compose {
+  padding: 10px 24px; border-radius: 8px; border: none; background: #7c3aed;
+  color: white; font-weight: 600; cursor: pointer; font-size: 14px;
+}
+
+/* Compose view overlay */
+#compose-view {
+  position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+  background: #06040a; z-index: 20; display: none; overflow: hidden;
+}
+#compose-view .segment-crop {
+  position: absolute; transition: opacity 0.5s; cursor: grab;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+}
+#compose-view .segment-crop:hover {
+  z-index: 1000 !important; outline: 2px solid #7c3aed;
+}
+#compose-back {
+  position: fixed; top: 20px; left: 20px; z-index: 25;
+  padding: 8px 16px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.2);
+  background: rgba(10,10,18,0.85); color: #e0e0e8; cursor: pointer; font-size: 13px;
+  backdrop-filter: blur(8px);
+}
+#compose-status {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 25;
+  padding: 8px 16px; border-radius: 8px; font-size: 13px; color: rgba(255,255,255,0.5);
+  background: rgba(10,10,18,0.85); backdrop-filter: blur(8px);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<div id="controls">
+  <input id="query" type="text" placeholder="Enter concept... (e.g. empire, arm, ocean)" />
+  <button id="btn-play">Play</button>
+  <button id="btn-stop">Stop</button>
+</div>
+
+<div id="status">Ready</div>
+
+<div id="sidebar">
+  <button class="close-btn" onclick="closeSidebar()">&times;</button>
+  <div id="sidebar-content"></div>
+</div>
+
+<div id="compose-panel">
+  <h4>Compose</h4>
+  <div class="stats" id="compose-stats"></div>
+  <button id="btn-compose">Assemble Composition</button>
+</div>
+
+<div id="compose-view">
+  <button id="compose-back">&larr; Back to graph</button>
+  <div id="compose-status">Loading segments...</div>
+</div>
+
+<script>
+// =========================================================================
+// Graph state
+// =========================================================================
+const nodes = new Map();  // path -> node
+const edges = [];         // {from, to, type, weight}
+let playing = false;
+let ws = null;
+let selectedNode = null;
+let hoveredNode = null;
+let dragNode = null;
+let dragOffset = {x:0, y:0};
+let camera = {x: 0, y: 0, zoom: 1};
+let mouseWorld = {x: 0, y: 0};
+
+const COLORS = {
+  audio: [124,58,237],
+  image: [6,182,212],
+  text:  [245,158,11],
+  video: [239,68,68],
+  font:  [16,185,129],
+  other: [107,114,128],
+};
+
+const EXT_TYPES = {
+  '.mp3':'audio', '.wav':'audio', '.m4a':'audio', '.aif':'audio', '.aiff':'audio', '.flac':'audio', '.ogg':'audio',
+  '.jpg':'image', '.jpeg':'image', '.png':'image', '.gif':'image', '.webp':'image', '.tif':'image', '.tiff':'image', '.bmp':'image',
+  '.pdf':'text', '.txt':'text', '.docx':'text', '.doc':'text', '.md':'text', '.rtf':'text', '.epub':'text',
+  '.mp4':'video', '.mov':'video', '.avi':'video', '.mkv':'video', '.webm':'video',
+  '.otf':'font', '.ttf':'font', '.woff':'font', '.woff2':'font', '.vfb':'font',
+};
+
+function fileType(ext) { return EXT_TYPES[(ext||'').toLowerCase()] || 'other'; }
+function nodeColor(node) { return COLORS[node.type] || COLORS.other; }
+function rgba(c, a) { return `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+
+// =========================================================================
+// Canvas rendering
+// =========================================================================
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+  canvas.width = window.innerWidth * devicePixelRatio;
+  canvas.height = window.innerHeight * devicePixelRatio;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function screenToWorld(sx, sy) {
+  return {
+    x: (sx - window.innerWidth/2) / camera.zoom + camera.x,
+    y: (sy - window.innerHeight/2) / camera.zoom + camera.y,
+  };
+}
+
+function worldToScreen(wx, wy) {
+  return {
+    x: (wx - camera.x) * camera.zoom + window.innerWidth/2,
+    y: (wy - camera.y) * camera.zoom + window.innerHeight/2,
+  };
+}
+
+function draw() {
+  const w = window.innerWidth, h = window.innerHeight;
+  ctx.clearRect(0, 0, w, h);
+
+  // Edges
+  const EDGE_COLORS = {
+    'co-folder': [124,58,237],
+    'co-album': [6,182,212],
+    'co-artist': [245,158,11],
+    'co-project': [16,185,129],
+  };
+  for (const e of edges) {
+    const a = nodes.get(e.from);
+    const b = nodes.get(e.to);
+    if (!a || !b) continue;
+    const sa = worldToScreen(a.x, a.y);
+    const sb = worldToScreen(b.x, b.y);
+    const ec = EDGE_COLORS[e.type] || [124,58,237];
+    const alpha = 0.1 + e.weight * 0.25;
+    ctx.strokeStyle = `rgba(${ec[0]},${ec[1]},${ec[2]},${alpha})`;
+    ctx.lineWidth = 0.5 + e.weight * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(sa.x, sa.y);
+    ctx.lineTo(sb.x, sb.y);
+    ctx.stroke();
+    // Highlight edges connected to hovered node
+    if (hoveredNode && (a === hoveredNode || b === hoveredNode)) {
+      ctx.strokeStyle = `rgba(${ec[0]},${ec[1]},${ec[2]},0.6)`;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+  }
+
+  // Nodes
+  for (const [path, node] of nodes) {
+    const s = worldToScreen(node.x, node.y);
+    const baseR = node.isAnchor ? 8 : 4;
+    const r = (baseR + node.score * 16) * camera.zoom;
+    if (s.x < -50 || s.x > w+50 || s.y < -50 || s.y > h+50) continue;
+
+    const color = nodeColor(node);
+    const alpha = 0.3 + node.score * 0.7;
+
+    // Glow for anchors
+    if (node.isAnchor) {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r + 4, 0, Math.PI * 2);
+      ctx.fillStyle = rgba(color, 0.15);
+      ctx.fill();
+    }
+
+    // Node circle
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = rgba(color, alpha);
+    ctx.fill();
+
+    // Hover/selected ring
+    if (node === hoveredNode || node === selectedNode) {
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+
+    // Label for larger or hovered nodes
+    if (r > 8 * camera.zoom || node === hoveredNode) {
+      ctx.font = `${Math.max(10, 11 * camera.zoom)}px -apple-system, sans-serif`;
+      ctx.fillStyle = `rgba(255,255,255,${alpha * 0.8})`;
+      ctx.textAlign = 'center';
+      const label = node.filename.length > 25 ? node.filename.slice(0, 22) + '...' : node.filename;
+      ctx.fillText(label, s.x, s.y + r + 14);
+    }
+  }
+
+  // Traversal pulse animation
+  if (playing && nodes.size > 0) {
+    const t = Date.now() / 1000;
+    for (const [path, node] of nodes) {
+      if (node.arrivalTime && (t - node.arrivalTime) < 1.5) {
+        const progress = (t - node.arrivalTime) / 1.5;
+        const s = worldToScreen(node.x, node.y);
+        const pulseR = (20 + node.score * 30) * camera.zoom * (1 + progress);
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, pulseR, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(124,58,237,${0.4 * (1 - progress)})`;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+      }
+    }
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// =========================================================================
+// Physics
+// =========================================================================
+function physics() {
+  const nodeList = [...nodes.values()];
+  const N = nodeList.length;
+  if (N === 0) { setTimeout(physics, 16); return; }
+
+  // Repulsion
+  for (let i = 0; i < N; i++) {
+    for (let j = i+1; j < N; j++) {
+      const a = nodeList[i], b = nodeList[j];
+      let dx = b.x - a.x, dy = b.y - a.y;
+      let dist = Math.sqrt(dx*dx + dy*dy) + 0.1;
+      let force = 800 / (dist * dist);
+      force = Math.min(force, 5);
+      const fx = (dx/dist) * force, fy = (dy/dist) * force;
+      a.vx -= fx; a.vy -= fy;
+      b.vx += fx; b.vy += fy;
+    }
+  }
+
+  // Edge attraction
+  for (const e of edges) {
+    const a = nodes.get(e.from), b = nodes.get(e.to);
+    if (!a || !b) continue;
+    let dx = b.x - a.x, dy = b.y - a.y;
+    let dist = Math.sqrt(dx*dx + dy*dy) + 0.1;
+    let force = (dist - 80) * 0.005 * e.weight;
+    const fx = (dx/dist) * force, fy = (dy/dist) * force;
+    a.vx += fx; a.vy += fy;
+    b.vx -= fx; b.vy -= fy;
+  }
+
+  // Center gravity
+  for (const n of nodeList) {
+    n.vx -= n.x * 0.001;
+    n.vy -= n.y * 0.001;
+  }
+
+  // Integration + damping
+  for (const n of nodeList) {
+    if (n === dragNode) continue;
+    n.vx *= 0.9;
+    n.vy *= 0.9;
+    n.x += n.vx;
+    n.y += n.vy;
+  }
+
+  setTimeout(physics, 16);
+}
+
+// =========================================================================
+// Graph API
+// =========================================================================
+function addNode(path, data) {
+  if (nodes.has(path)) {
+    const existing = nodes.get(path);
+    existing.score = Math.max(existing.score, data.score || 0);
+    if (data.isAnchor) existing.isAnchor = true;
+    data.sources?.forEach(s => existing.sources.push(s));
+    return existing;
+  }
+  const ext = data.extension || '';
+  const node = {
+    path,
+    filename: data.filename || path.split('/').pop(),
+    extension: ext,
+    type: fileType(ext),
+    score: data.score || 0.5,
+    isAnchor: data.isAnchor || false,
+    sources: data.sources || [],
+    x: (Math.random() - 0.5) * 200,
+    y: (Math.random() - 0.5) * 200,
+    vx: 0, vy: 0,
+    arrivalTime: Date.now() / 1000,
+  };
+  nodes.set(path, node);
+  return node;
+}
+
+function addEdge(from, to, type, weight) {
+  edges.push({from, to, type, weight: weight || 0.5});
+}
+
+function clearGraph() {
+  nodes.clear();
+  edges.length = 0;
+  selectedNode = null;
+  hoveredNode = null;
+}
+
+// =========================================================================
+// WebSocket streaming
+// =========================================================================
+let currentQuery = '';
+let allResults = [];
+let streamIndex = 0;
+let streamTimer = null;
+let batchSize = 100;
+
+function startTraversal(query) {
+  if (currentQuery === query && allResults.length > 0 && streamIndex < allResults.length) {
+    // Resume streaming more results
+    playing = true;
+    document.getElementById('btn-play').textContent = 'Playing...';
+    document.getElementById('btn-play').classList.add('active');
+    document.getElementById('compose-panel').style.display = 'none';
+    streamResults();
+    return;
+  }
+
+  // New query
+  clearGraph();
+  currentQuery = query;
+  allResults = [];
+  streamIndex = 0;
+  playing = true;
+  document.getElementById('btn-play').textContent = 'Loading...';
+  document.getElementById('btn-play').classList.add('active');
+  document.getElementById('compose-panel').style.display = 'none';
+  setStatus(`Querying "${query}"...`);
+
+  fetch('/api/concept', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({query, count: 500}),
+  })
+  .then(r => r.json())
+  .then(results => {
+    allResults = results;
+    setStatus(`${results.length} results — streaming first ${batchSize}...`);
+    document.getElementById('btn-play').textContent = 'Playing...';
+    streamResults();
+  })
+  .catch(e => {
+    setStatus('Error: ' + e.message);
+    stopTraversal();
+  });
+}
+
+// Batch streaming state
+const folderMap = new Map();
+
+function streamResults() {
+  const batchEnd = Math.min(streamIndex + batchSize, allResults.length);
+
+  function addNext() {
+    if (streamIndex >= batchEnd || !playing) {
+      if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
+      const remaining = allResults.length - streamIndex;
+      if (remaining > 0) {
+        document.getElementById('btn-play').textContent = `More (${remaining})`;
+        document.getElementById('btn-play').classList.remove('active');
+        playing = false;
+      } else {
+        document.getElementById('btn-play').textContent = 'Play';
+        document.getElementById('btn-play').classList.remove('active');
+        playing = false;
+      }
+      updateComposePanel();
+      setStatus(`${nodes.size} nodes, ${edges.length} edges${remaining > 0 ? ` — ${remaining} more` : ' — complete'}`);
+      return;
+    }
+
+    const r = allResults[streamIndex];
+    addNode(r.file.path, {
+      filename: r.file.filename,
+      extension: r.file.extension,
+      score: r.score,
+      isAnchor: r.sources.some(s => s.edge_type.startsWith('anchor:')),
+      sources: r.sources,
+    });
+
+    // Folder edges
+    const folder = r.file.parent_folder || r.file.path.split('/').slice(0, -1).join('/');
+    if (!folderMap.has(folder)) folderMap.set(folder, []);
+    const siblings = folderMap.get(folder);
+    if (siblings.length > 0 && siblings.length < 6) {
+      addEdge(siblings[0], r.file.path, 'co-folder', Math.min(r.score, 0.5));
+    }
+    siblings.push(r.file.path);
+
+    // Source edges
+    for (const s of r.sources) {
+      if (s.edge_type.startsWith('co-') && s.via) {
+        for (const [ep, en] of nodes) {
+          if (en.filename === s.via && ep !== r.file.path) {
+            addEdge(ep, r.file.path, s.edge_type, s.weight);
+            break;
+          }
+        }
+      }
+    }
+
+    streamIndex++;
+    setStatus(`${nodes.size}/${allResults.length} — "${currentQuery}"`);
+    streamTimer = setTimeout(addNext, 15 + Math.random() * 30);
+  }
+  addNext();
+}
+
+function updateComposePanel() {
+  const nImages = [...nodes.values()].filter(n => n.type === 'image').length;
+  const nAudio = [...nodes.values()].filter(n => n.type === 'audio').length;
+  const nText = [...nodes.values()].filter(n => n.type === 'text').length;
+  const nVideo = [...nodes.values()].filter(n => n.type === 'video').length;
+  const parts = [];
+  if (nImages) parts.push(`${nImages} images`);
+  if (nAudio) parts.push(`${nAudio} audio`);
+  if (nText) parts.push(`${nText} text`);
+  if (nVideo) parts.push(`${nVideo} video`);
+  document.getElementById('compose-stats').textContent =
+    `${nodes.size} files: ${parts.join(', ')}`;
+  document.getElementById('compose-panel').style.display = 'block';
+}
+
+function handleMessage(msg) {
+  if (msg.type === 'anchor') {
+    addNode(msg.path, {
+      filename: msg.filename,
+      extension: msg.extension,
+      score: msg.score,
+      isAnchor: true,
+      sources: [{edge_type: msg.source_type, weight: msg.score}],
+    });
+  } else if (msg.type === 'edge') {
+    addNode(msg.path, {
+      filename: msg.filename,
+      extension: msg.extension,
+      score: msg.score,
+      sources: [{edge_type: msg.edge_type, via: msg.via, weight: msg.score}],
+    });
+    if (msg.via_path) {
+      addEdge(msg.via_path, msg.path, msg.edge_type, msg.score);
+    }
+  } else if (msg.type === 'done') {
+    stopTraversal();
+  }
+  setStatus(`${nodes.size} nodes, ${edges.length} edges`);
+}
+
+function stopTraversal() {
+  playing = false;
+  if (streamTimer) { clearTimeout(streamTimer); streamTimer = null; }
+  const remaining = allResults.length - streamIndex;
+  if (remaining > 0) {
+    document.getElementById('btn-play').textContent = `More (${remaining})`;
+  } else {
+    document.getElementById('btn-play').textContent = 'Play';
+  }
+  document.getElementById('btn-play').classList.remove('active');
+  updateComposePanel();
+  setStatus(`${nodes.size} nodes — ${remaining > 0 ? remaining + ' more available' : 'complete'}`);
+}
+
+// =========================================================================
+// Interaction
+// =========================================================================
+canvas.addEventListener('mousemove', (e) => {
+  mouseWorld = screenToWorld(e.clientX, e.clientY);
+
+  if (dragNode) {
+    dragNode.x = mouseWorld.x + dragOffset.x;
+    dragNode.y = mouseWorld.y + dragOffset.y;
+    dragNode.vx = 0;
+    dragNode.vy = 0;
+    return;
+  }
+
+  // Hit test
+  hoveredNode = null;
+  for (const [path, node] of nodes) {
+    const dx = mouseWorld.x - node.x, dy = mouseWorld.y - node.y;
+    const r = 6 + node.score * 20;
+    if (dx*dx + dy*dy < r*r) {
+      hoveredNode = node;
+      canvas.style.cursor = 'pointer';
+      return;
+    }
+  }
+  canvas.style.cursor = 'default';
+});
+
+canvas.addEventListener('mousedown', (e) => {
+  if (hoveredNode) {
+    dragNode = hoveredNode;
+    dragOffset.x = hoveredNode.x - mouseWorld.x;
+    dragOffset.y = hoveredNode.y - mouseWorld.y;
+  }
+});
+
+canvas.addEventListener('mouseup', (e) => {
+  if (dragNode && hoveredNode === dragNode) {
+    showSidebar(dragNode);
+  }
+  dragNode = null;
+});
+
+canvas.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  const factor = e.deltaY > 0 ? 0.9 : 1.1;
+  camera.zoom *= factor;
+  camera.zoom = Math.max(0.1, Math.min(5, camera.zoom));
+}, {passive: false});
+
+// Pan with middle mouse or ctrl+drag
+let panning = false, panStart = {x:0,y:0};
+canvas.addEventListener('mousedown', (e) => {
+  if (e.button === 1 || (e.button === 0 && e.altKey)) {
+    panning = true;
+    panStart = {x: e.clientX, y: e.clientY};
+    e.preventDefault();
+  }
+});
+canvas.addEventListener('mousemove', (e) => {
+  if (panning) {
+    camera.x -= (e.clientX - panStart.x) / camera.zoom;
+    camera.y -= (e.clientY - panStart.y) / camera.zoom;
+    panStart = {x: e.clientX, y: e.clientY};
+  }
+});
+canvas.addEventListener('mouseup', () => { panning = false; });
+
+// Controls
+document.getElementById('btn-play').addEventListener('click', () => {
+  const q = document.getElementById('query').value.trim();
+  if (!q) return;
+  if (playing) { stopTraversal(); return; }
+  startTraversal(q);
+});
+
+document.getElementById('query').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    const q = e.target.value.trim();
+    if (!q) return;
+    if (playing) stopTraversal();
+    startTraversal(q);
+  }
+});
+
+document.getElementById('btn-stop').addEventListener('click', stopTraversal);
+
+// =========================================================================
+// Sidebar
+// =========================================================================
+function showSidebar(node) {
+  selectedNode = node;
+  const el = document.getElementById('sidebar-content');
+  const isImage = node.type === 'image';
+  const isAudio = node.type === 'audio';
+
+  let html = `<h3>${node.filename}</h3>`;
+  html += `<div class="meta">${node.path}</div>`;
+  html += `<div class="meta">Score: ${node.score.toFixed(3)} | Type: ${node.type}</div>`;
+
+  if (isImage) {
+    html += `<img class="preview-img" src="/api/file/preview?path=${encodeURIComponent(node.path)}" onerror="this.style.display='none'" />`;
+  }
+  if (isAudio) {
+    html += `<audio controls style="width:100%;margin:8px 0"><source src="/api/file/preview?path=${encodeURIComponent(node.path)}"></audio>`;
+  }
+
+  // Full reasoning chain
+  html += '<div style="margin-top:16px"><h3>Why this file?</h3>';
+  const seen = new Set();
+  for (const s of node.sources) {
+    const key = s.edge_type + '|' + (s.via || '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    let explanation = '';
+    const type = s.edge_type;
+    if (type.startsWith('anchor:filename')) {
+      explanation = `Filename contains the search term`;
+    } else if (type.startsWith('anchor:title')) {
+      explanation = `Title metadata matches`;
+    } else if (type.startsWith('anchor:artist')) {
+      explanation = `Artist name matches`;
+    } else if (type.startsWith('anchor:album')) {
+      explanation = `Album name matches`;
+    } else if (type.startsWith('anchor:folder')) {
+      explanation = `Found in a matching folder`;
+    } else if (type.startsWith('anchor:chunk')) {
+      explanation = `Document text mentions the concept`;
+    } else if (type.startsWith('anchor:genre')) {
+      explanation = `Genre matches`;
+    } else if (type === 'co-folder') {
+      explanation = `Same folder as <em>${s.via || '?'}</em>`;
+    } else if (type === 'co-album') {
+      explanation = `Same album as <em>${s.via || '?'}</em>`;
+    } else if (type === 'co-artist') {
+      explanation = `Same artist as <em>${s.via || '?'}</em>`;
+    } else if (type === 'co-project') {
+      explanation = `Same project as <em>${s.via || '?'}</em>`;
+    } else if (type.startsWith('neighbor:')) {
+      const model = type.split(':').slice(1).join(':');
+      explanation = `Semantically similar (${model}) to <em>${s.via || '?'}</em>`;
+    } else {
+      explanation = type;
+    }
+
+    const strength = s.weight > 0.7 ? 'strong' : s.weight > 0.4 ? 'medium' : 'weak';
+    html += `<div style="margin:6px 0;padding:6px 10px;background:rgba(255,255,255,0.04);border-radius:6px;border-left:3px solid ${
+      strength === 'strong' ? '#7c3aed' : strength === 'medium' ? '#6b7280' : '#374151'
+    }">`;
+    html += `<div style="font-size:13px">${explanation}</div>`;
+    html += `<div style="font-size:11px;color:rgba(255,255,255,0.3);margin-top:2px">${type} — strength ${(s.weight * 100).toFixed(0)}%</div>`;
+    html += '</div>';
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
+  document.getElementById('sidebar').classList.add('open');
+}
+
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  selectedNode = null;
+}
+
+function setStatus(text) {
+  document.getElementById('status').textContent = text;
+}
+
+// =========================================================================
+// Compose view — streams segment crops onto a canvas
+// =========================================================================
+
+// Try remote crop server, fall back to local
+const REMOTE_CROP = 'http://192.168.1.251:4000';
+let CROP_SERVER = REMOTE_CROP;
+
+// Test connectivity on load
+fetch(REMOTE_CROP + '/segments?q=test&count=1', {mode: 'cors'})
+  .then(r => { if (r.ok) console.log('Remote crop server OK'); })
+  .catch(() => {
+    console.log('Remote crop server unreachable, using local proxy');
+    CROP_SERVER = '';  // use local server
+  });
+
+document.getElementById('btn-compose').addEventListener('click', openComposeView);
+document.getElementById('compose-back').addEventListener('click', closeComposeView);
+
+function openComposeView() {
+  document.getElementById('compose-view').style.display = 'block';
+  document.getElementById('compose-status').textContent = 'Fetching segments...';
+  fetchAndStreamSegments();
+}
+
+function closeComposeView() {
+  document.getElementById('compose-view').style.display = 'none';
+  // Remove segment images
+  document.querySelectorAll('#compose-view .segment-crop').forEach(el => el.remove());
+}
+
+async function fetchAndStreamSegments() {
+  const query = currentQuery;
+  if (!query) return;
+
+  const view = document.getElementById('compose-view');
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+
+  try {
+    const res = await fetch(`${CROP_SERVER}/segments?q=${encodeURIComponent(query)}&count=300`);
+    const segments = await res.json();
+
+    document.getElementById('compose-status').textContent =
+      `Streaming ${segments.length} segments...`;
+
+    let placed = 0;
+    const sources = new Set();
+
+    function placeNext() {
+      if (placed >= segments.length) {
+        document.getElementById('compose-status').textContent =
+          `${placed} segments from ${sources.size} sources`;
+        return;
+      }
+
+      const seg = segments[placed];
+      const img = document.createElement('img');
+      img.className = 'segment-crop';
+      img.src = `${CROP_SERVER}/crop?path=${encodeURIComponent(seg.path)}&bx=${seg.bx}&by=${seg.by}&bw=${seg.bw}&bh=${seg.bh}`;
+
+      // Size based on area (larger segments = bigger)
+      const area = seg.area || 0.1;
+      const baseSize = 60 + area * 300;
+      const size = baseSize + Math.random() * 40;
+
+      // Position — spread across canvas, anchors more central
+      const cx = seg.anchor
+        ? W/2 + (Math.random() - 0.5) * W * 0.4
+        : Math.random() * W;
+      const cy = seg.anchor
+        ? H/2 + (Math.random() - 0.5) * H * 0.4
+        : Math.random() * H;
+
+      // Random rotation
+      const angle = (Math.random() - 0.5) * 50;
+
+      // Opacity — anchors brighter
+      const opacity = seg.anchor ? 0.7 + Math.random() * 0.3 : 0.3 + area * 0.5;
+
+      // Depth — larger segments behind
+      const zIndex = Math.floor(100 - area * 50 + Math.random() * 20);
+
+      img.style.cssText = `
+        left: ${cx - size/2}px; top: ${cy - size/2}px;
+        width: ${size}px; height: auto; max-height: ${size * 1.5}px;
+        object-fit: cover; opacity: 0;
+        transform: rotate(${angle}deg);
+        z-index: ${zIndex};
+      `;
+
+      // Fade in on load
+      img.onload = () => {
+        img.style.opacity = opacity;
+      };
+      img.onerror = () => {
+        img.remove();
+      };
+
+      // Make draggable
+      makeDraggable(img);
+
+      view.appendChild(img);
+      sources.add(seg.path);
+      placed++;
+
+      document.getElementById('compose-status').textContent =
+        `${placed}/${segments.length} segments from ${sources.size} sources`;
+
+      // Stream delay — fast at first, then slower
+      const delay = placed < 30 ? 30 : placed < 100 ? 60 : 100;
+      setTimeout(placeNext, delay);
+    }
+
+    placeNext();
+  } catch (e) {
+    document.getElementById('compose-status').textContent = 'Error: ' + e.message;
+  }
+}
+
+function makeDraggable(el) {
+  let startX, startY, origLeft, origTop;
+
+  el.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    el.style.cursor = 'grabbing';
+    el.style.zIndex = 1001;
+    startX = e.clientX;
+    startY = e.clientY;
+    origLeft = parseInt(el.style.left);
+    origTop = parseInt(el.style.top);
+
+    function onMove(e) {
+      el.style.left = (origLeft + e.clientX - startX) + 'px';
+      el.style.top = (origTop + e.clientY - startY) + 'px';
+    }
+    function onUp() {
+      el.style.cursor = 'grab';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    }
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
+// =========================================================================
+// Init
+// =========================================================================
+draw();
+physics();
+</script>
+</body>
+</html>

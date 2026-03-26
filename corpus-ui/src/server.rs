@@ -28,6 +28,7 @@ pub fn build_router(conn: Connection) -> Router {
         .route("/api/concept", post(api::concept_search))
         .route("/api/compose/live", any(ws::compose_live))
         .route("/api/file/preview", get(api::file_preview))
+        .route("/graph", get(api::graph_page))
         .fallback(get(api::static_files))
         .layer(CorsLayer::permissive())
         .with_state(state)

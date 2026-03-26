@@ -20,6 +20,11 @@ use crate::server::AppState;
 const INDEX_HTML: &str = include_str!("../static/index.html");
 const APP_JS: &str = include_str!("../static/app.js");
 const STYLE_CSS: &str = include_str!("../static/style.css");
+const GRAPH_HTML: &str = include_str!("../static/graph.html");
+
+pub async fn graph_page() -> impl IntoResponse {
+    (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], GRAPH_HTML)
+}
 
 pub async fn static_files(uri: axum::http::Uri) -> impl IntoResponse {
     let path = uri.path();
@@ -33,6 +38,11 @@ pub async fn static_files(uri: axum::http::Uri) -> impl IntoResponse {
             StatusCode::OK,
             [(header::CONTENT_TYPE, "text/css")],
             STYLE_CSS,
+        ),
+        "/graph" => (
+            StatusCode::OK,
+            [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            GRAPH_HTML,
         ),
         _ => (
             StatusCode::OK,
@@ -498,7 +508,7 @@ pub async fn concept_search(
     Json(req): Json<ConceptRequest>,
 ) -> Result<Json<Vec<ConceptResultItem>>, AppError> {
     let db = state.db.lock().map_err(|e| AppError(format!("db lock: {e}")))?;
-    let count = req.count.unwrap_or(50).min(200);
+    let count = req.count.unwrap_or(200).min(500);
 
     let opts = corpus_associate::concept::ConceptQueryOpts {
         max_results: count,

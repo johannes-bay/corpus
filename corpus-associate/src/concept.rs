@@ -139,8 +139,8 @@ pub fn concept_query(
             .collect();
 
         for (path, parent_score) in &frontier {
-            // Co-folder edge
-            if let Ok(siblings) = queries::get_folder_siblings(conn, path, opts.fan_out) {
+            // Co-folder edge (capped)
+            if let Ok(siblings) = queries::get_folder_siblings(conn, path, 10) {
                 let propagated = parent_score * DECAY_CO_FOLDER;
                 if propagated >= opts.score_floor {
                     for sib in siblings {
@@ -176,12 +176,12 @@ pub fn concept_query(
                 }
             }
 
-            // Co-album edge
+            // Co-album edge (capped tight to avoid discography flooding)
             if let Ok(Some(meta)) = queries::get_audio_meta(conn, path) {
                 if let Some(ref album) = meta.album {
                     let propagated = parent_score * DECAY_CO_ALBUM;
                     if propagated >= opts.score_floor {
-                        if let Ok(album_files) = queries::get_files_by_album(conn, album, opts.fan_out) {
+                        if let Ok(album_files) = queries::get_files_by_album(conn, album, 5) {
                             for af in album_files {
                                 if af.path == *path {
                                     continue;
@@ -200,7 +200,7 @@ pub fn concept_query(
                 if let Some(ref artist) = meta.artist {
                     let propagated = parent_score * DECAY_CO_ARTIST;
                     if propagated >= opts.score_floor {
-                        if let Ok(artist_files) = queries::get_files_by_artist(conn, artist, 30) {
+                        if let Ok(artist_files) = queries::get_files_by_artist(conn, artist, 5) {
                             for af in artist_files {
                                 if af.path == *path {
                                     continue;
