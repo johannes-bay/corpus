@@ -102,6 +102,25 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (path)
     );
     CREATE INDEX IF NOT EXISTS idx_file_projects_proj ON file_projects(project_id);",
+    // Migration 5: pipeline registry
+    "CREATE TABLE IF NOT EXISTS pipelines (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        description  TEXT,
+        script       TEXT NOT NULL,
+        model        TEXT,
+        model_version TEXT,
+        input_query  TEXT,
+        output_table TEXT NOT NULL,
+        params       TEXT,
+        files_total  INTEGER NOT NULL DEFAULT 0,
+        files_done   INTEGER NOT NULL DEFAULT 0,
+        files_failed INTEGER NOT NULL DEFAULT 0,
+        started      INTEGER,
+        completed    INTEGER,
+        status       TEXT NOT NULL DEFAULT 'pending',
+        UNIQUE(name, model)
+    );",
 ];
 
 /// Tracks which migrations have been applied.
