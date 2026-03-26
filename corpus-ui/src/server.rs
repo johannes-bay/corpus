@@ -25,6 +25,7 @@ pub fn build_router(conn: Connection) -> Router {
         .route("/api/file", get(api::file_info))
         .route("/api/search", get(api::search))
         .route("/api/compose", post(api::compose))
+        .route("/api/concept", post(api::concept_search))
         .route("/api/compose/live", any(ws::compose_live))
         .route("/api/file/preview", get(api::file_preview))
         .fallback(get(api::static_files))

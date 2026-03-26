@@ -469,6 +469,69 @@ pub async fn file_preview(
 }
 
 // ---------------------------------------------------------------------------
+// POST /api/concept
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct ConceptRequest {
+    query: String,
+    count: Option<usize>,
+    max_depth: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct ConceptResultItem {
+    file: corpus_db::models::FileEntry,
+    score: f64,
+    sources: Vec<ConceptSourceInfo>,
+}
+
+#[derive(Serialize)]
+pub struct ConceptSourceInfo {
+    edge_type: String,
+    via: Option<String>,
+    weight: f64,
+}
+
+pub async fn concept_search(
+    State(state): State<AppState>,
+    Json(req): Json<ConceptRequest>,
+) -> Result<Json<Vec<ConceptResultItem>>, AppError> {
+    let db = state.db.lock().map_err(|e| AppError(format!("db lock: {e}")))?;
+    let count = req.count.unwrap_or(50).min(200);
+
+    let opts = corpus_associate::concept::ConceptQueryOpts {
+        max_results: count,
+        max_depth: req.max_depth.unwrap_or(2),
+        ..Default::default()
+    };
+
+    let results = corpus_associate::concept::concept_query(&db, &req.query, &opts)
+        .unwrap_or_default();
+
+    let items = results
+        .into_iter()
+        .map(|m| ConceptResultItem {
+            file: m.file,
+            score: m.concept_score,
+            sources: m
+                .sources
+                .iter()
+                .map(|s| ConceptSourceInfo {
+                    edge_type: s.edge_type.clone(),
+                    via: s.via_path.as_ref().map(|p| {
+                        p.split('/').last().unwrap_or(p).to_string()
+                    }),
+                    weight: s.weight,
+                })
+                .collect(),
+        })
+        .collect();
+
+    Ok(Json(items))
+}
+
+// ---------------------------------------------------------------------------
 // Error type
 // ---------------------------------------------------------------------------
 

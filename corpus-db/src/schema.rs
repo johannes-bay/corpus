@@ -69,6 +69,39 @@ const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (segment_id, model)
     );
     CREATE INDEX IF NOT EXISTS idx_segemb_model ON segment_embeddings(model);",
+    // Migration 4: Full-text search index and embedding neighbor graph
+    "CREATE VIRTUAL TABLE IF NOT EXISTS corpus_fts USING fts5(
+        path UNINDEXED,
+        source_type UNINDEXED,
+        source_key UNINDEXED,
+        content,
+        tokenize='porter unicode61'
+    );
+
+    CREATE TABLE IF NOT EXISTS neighbors (
+        path_a     TEXT NOT NULL,
+        path_b     TEXT NOT NULL,
+        model      TEXT NOT NULL,
+        similarity REAL NOT NULL,
+        PRIMARY KEY (path_a, model, path_b)
+    );
+    CREATE INDEX IF NOT EXISTS idx_neighbors_b ON neighbors(path_b, model);
+
+    CREATE TABLE IF NOT EXISTS projects (
+        id           TEXT PRIMARY KEY,
+        name         TEXT NOT NULL,
+        project_root TEXT NOT NULL UNIQUE,
+        file_count   INTEGER NOT NULL DEFAULT 0,
+        date_range   TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_projects_name ON projects(name);
+
+    CREATE TABLE IF NOT EXISTS file_projects (
+        path       TEXT NOT NULL REFERENCES files(path),
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        PRIMARY KEY (path)
+    );
+    CREATE INDEX IF NOT EXISTS idx_file_projects_proj ON file_projects(project_id);",
 ];
 
 /// Tracks which migrations have been applied.

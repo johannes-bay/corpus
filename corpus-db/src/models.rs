@@ -142,3 +142,28 @@ pub struct SegmentEmbedding {
     pub vector: Vec<f32>,
     pub dim: usize,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FtsHit {
+    pub path: String,
+    pub source_type: String,
+    pub source_key: String,
+    pub rank: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Neighbor {
+    pub path_a: String,
+    pub path_b: String,
+    pub model: String,
+    pub similarity: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub name: String,
+    pub project_root: String,
+    pub file_count: i64,
+    pub date_range: Option<String>,
+}

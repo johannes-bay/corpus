@@ -1,7 +1,7 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
 
-use crate::models::{AudioMeta, DocumentMeta, Embedding, FileEntry, FontMeta, PhotoMeta, Property, Segment, SegmentEmbedding, VideoMeta};
+use crate::models::{AudioMeta, DocumentMeta, Embedding, FileEntry, FontMeta, FtsHit, Neighbor, PhotoMeta, Project, Property, Segment, SegmentEmbedding, VideoMeta};
 
 fn row_to_file(row: &rusqlite::Row<'_>) -> rusqlite::Result<FileEntry> {
     Ok(FileEntry {
@@ -531,6 +531,137 @@ pub fn count_segment_embeddings(conn: &Connection, model: &str) -> Result<i64> {
         |row| row.get(0),
     )?;
     Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Full-text search queries
+// ---------------------------------------------------------------------------
+
+/// Search the FTS index for a query string. Returns matching file paths with source info.
+pub fn fts_search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<FtsHit>> {
+    let mut stmt = conn.prepare(
+        "SELECT path, source_type, source_key, rank
+         FROM corpus_fts WHERE content MATCH ?1
+         ORDER BY rank LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![query, limit as i64], |row| {
+        Ok(FtsHit {
+            path: row.get("path")?,
+            source_type: row.get("source_type")?,
+            source_key: row.get("source_key")?,
+            rank: row.get("rank")?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Count rows in the FTS index.
+pub fn count_fts(conn: &Connection) -> Result<i64> {
+    let count: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM corpus_fts",
+        [],
+        |row| row.get(0),
+    )?;
+    Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Neighbor graph queries
+// ---------------------------------------------------------------------------
+
+/// Get the top-K nearest neighbors for a file and model.
+pub fn get_neighbors(conn: &Connection, path: &str, model: &str, limit: usize) -> Result<Vec<Neighbor>> {
+    let mut stmt = conn.prepare(
+        "SELECT path_a, path_b, model, similarity FROM neighbors
+         WHERE path_a = ?1 AND model = ?2
+         ORDER BY similarity DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![path, model, limit as i64], |row| {
+        Ok(Neighbor {
+            path_a: row.get("path_a")?,
+            path_b: row.get("path_b")?,
+            model: row.get("model")?,
+            similarity: row.get("similarity")?,
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Project queries
+// ---------------------------------------------------------------------------
+
+/// Get the project a file belongs to.
+pub fn get_file_project(conn: &Connection, path: &str) -> Result<Option<Project>> {
+    let result = conn.query_row(
+        "SELECT p.id, p.name, p.project_root, p.file_count, p.date_range
+         FROM file_projects fp
+         JOIN projects p ON p.id = fp.project_id
+         WHERE fp.path = ?1",
+        [path],
+        |row| {
+            Ok(Project {
+                id: row.get("id")?,
+                name: row.get("name")?,
+                project_root: row.get("project_root")?,
+                file_count: row.get("file_count")?,
+                date_range: row.get("date_range")?,
+            })
+        },
+    );
+    match result {
+        Ok(p) => Ok(Some(p)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Get all files in a project.
+pub fn get_project_files(conn: &Connection, project_id: &str, limit: usize) -> Result<Vec<FileEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.path, f.filename, f.extension, f.size_bytes, f.modified_date, f.parent_folder
+         FROM file_projects fp
+         JOIN files f ON f.path = fp.path
+         WHERE fp.project_id = ?1 LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![project_id, limit as i64], row_to_file)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Get files sharing the same parent folder.
+pub fn get_folder_siblings(conn: &Connection, path: &str, limit: usize) -> Result<Vec<FileEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.path, f.filename, f.extension, f.size_bytes, f.modified_date, f.parent_folder
+         FROM files f
+         WHERE f.parent_folder = (SELECT parent_folder FROM files WHERE path = ?1)
+         AND f.path != ?1 LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![path, limit as i64], row_to_file)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Get audio files by artist.
+pub fn get_files_by_artist(conn: &Connection, artist: &str, limit: usize) -> Result<Vec<FileEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.path, f.filename, f.extension, f.size_bytes, f.modified_date, f.parent_folder
+         FROM audio_meta am
+         JOIN files f ON f.path = am.path
+         WHERE am.artist = ?1 LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![artist, limit as i64], row_to_file)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Get audio files by album.
+pub fn get_files_by_album(conn: &Connection, album: &str, limit: usize) -> Result<Vec<FileEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.path, f.filename, f.extension, f.size_bytes, f.modified_date, f.parent_folder
+         FROM audio_meta am
+         JOIN files f ON f.path = am.path
+         WHERE am.album = ?1 LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![album, limit as i64], row_to_file)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 // ---------------------------------------------------------------------------
