@@ -8,3 +8,4 @@ __pycache__/
 *.tmp
 *.pt
 output/
+*.db.local_backup
