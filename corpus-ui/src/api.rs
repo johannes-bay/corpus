@@ -487,6 +487,15 @@ pub struct ConceptRequest {
     query: String,
     count: Option<usize>,
     max_depth: Option<usize>,
+    /// Negative query — files matching this text get penalized.
+    negative_query: Option<String>,
+    /// Stem filter: only keep results meeting these minimum stem scores.
+    /// E.g., {"vocals": 0.5} keeps only files with vocals score >= 0.5.
+    stem_filter: Option<HashMap<String, f64>>,
+    /// Whether to compose the results (ordered by key-chain, provenance, etc.)
+    compose: Option<bool>,
+    /// Composition mode: "audio", "image", "mixed", or "auto" (default).
+    compose_mode: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -503,21 +512,95 @@ pub struct ConceptSourceInfo {
     weight: f64,
 }
 
+#[derive(Serialize)]
+pub struct ConceptSearchResponse {
+    results: Vec<ConceptResultItem>,
+    composition: Option<CompositionInfo>,
+}
+
+#[derive(Serialize)]
+pub struct CompositionInfo {
+    summary: String,
+    audio_order: Vec<CompositionItemInfo>,
+    image_order: Vec<CompositionItemInfo>,
+}
+
+#[derive(Serialize)]
+pub struct CompositionItemInfo {
+    path: String,
+    filename: String,
+    role: String,
+    position: usize,
+    notes: Vec<String>,
+}
+
 pub async fn concept_search(
     State(state): State<AppState>,
     Json(req): Json<ConceptRequest>,
-) -> Result<Json<Vec<ConceptResultItem>>, AppError> {
+) -> Result<Json<ConceptSearchResponse>, AppError> {
     let db = state.db.lock().map_err(|e| AppError(format!("db lock: {e}")))?;
     let count = req.count.unwrap_or(200).min(500);
+
+    let stem_filter: Vec<(String, f64)> = req
+        .stem_filter
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
     let opts = corpus_associate::concept::ConceptQueryOpts {
         max_results: count,
         max_depth: req.max_depth.unwrap_or(2),
+        negative_query: req.negative_query.clone(),
+        stem_filter,
+        stem_anchoring: true,
         ..Default::default()
     };
 
     let results = corpus_associate::concept::concept_query(&db, &req.query, &opts)
         .unwrap_or_default();
+
+    // Optionally compose the results
+    let composition = if req.compose.unwrap_or(false) {
+        let compose_mode = match req.compose_mode.as_deref() {
+            Some("audio") => corpus_associate::composer::CompositionMode::Audio,
+            Some("image") => corpus_associate::composer::CompositionMode::Image,
+            Some("mixed") => corpus_associate::composer::CompositionMode::Mixed,
+            _ => corpus_associate::composer::CompositionMode::Auto,
+        };
+        let compose_opts = corpus_associate::composer::ComposeOpts {
+            mode: compose_mode,
+            ..Default::default()
+        };
+        corpus_associate::composer::compose(&db, &req.query, &results, &compose_opts)
+            .ok()
+            .map(|plan| CompositionInfo {
+                summary: plan.summary,
+                audio_order: plan
+                    .audio_items
+                    .iter()
+                    .map(|item| CompositionItemInfo {
+                        path: item.file.path.clone(),
+                        filename: item.file.filename.clone(),
+                        role: item.role.clone(),
+                        position: item.position,
+                        notes: item.notes.clone(),
+                    })
+                    .collect(),
+                image_order: plan
+                    .image_items
+                    .iter()
+                    .map(|item| CompositionItemInfo {
+                        path: item.file.path.clone(),
+                        filename: item.file.filename.clone(),
+                        role: item.role.clone(),
+                        position: item.position,
+                        notes: item.notes.clone(),
+                    })
+                    .collect(),
+            })
+    } else {
+        None
+    };
 
     let items = results
         .into_iter()
@@ -538,7 +621,10 @@ pub async fn concept_search(
         })
         .collect();
 
-    Ok(Json(items))
+    Ok(Json(ConceptSearchResponse {
+        results: items,
+        composition,
+    }))
 }
 
 // ---------------------------------------------------------------------------

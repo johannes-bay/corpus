@@ -1,5 +1,5 @@
 pub mod axes;
-mod composer;
+pub mod composer;
 pub mod concept;
 pub mod explain;
 pub mod matcher;

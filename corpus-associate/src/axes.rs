@@ -218,18 +218,18 @@ pub struct KeyAxis;
 /// Camelot-wheel positions. Each key gets a (wheel_number 1..12, is_minor) pair.
 /// The wheel arranges keys so that adjacent numbers are a fifth apart and
 /// the A/B column toggles relative major/minor.
-struct CamelotPos {
-    number: u8, // 1..=12
-    minor: bool,
+pub(crate) struct CamelotPos {
+    pub(crate) number: u8, // 1..=12
+    pub(crate) minor: bool,
 }
 
 /// Return the Camelot position for a canonical key name, or None.
-fn camelot_position(key: &str) -> Option<CamelotPos> {
+pub(crate) fn camelot_position(key: &str) -> Option<CamelotPos> {
     let k = normalize_enharmonic(key);
     camelot_lookup(&k)
 }
 
-fn camelot_lookup(key: &str) -> Option<CamelotPos> {
+pub(crate) fn camelot_lookup(key: &str) -> Option<CamelotPos> {
     // Comprehensive table covering both minor (column A) and major (column B).
     let table: &[(&str, u8, bool)] = &[
         // Column A (minor)
@@ -269,7 +269,7 @@ fn camelot_lookup(key: &str) -> Option<CamelotPos> {
 }
 
 /// Map enharmonic equivalents to a single canonical spelling.
-fn normalize_enharmonic(key: &str) -> String {
+pub(crate) fn normalize_enharmonic(key: &str) -> String {
     let s = key.trim();
     // Handle "minor" / "major" words
     let s = s
@@ -302,13 +302,13 @@ fn normalize_enharmonic(key: &str) -> String {
 }
 
 /// Distance in steps around the Camelot wheel (0..6, wrapping around 12).
-fn wheel_distance(a: u8, b: u8) -> u8 {
+pub(crate) fn wheel_distance(a: u8, b: u8) -> u8 {
     let diff = a.abs_diff(b);
     diff.min(12 - diff)
 }
 
 /// Full compatibility score between two keys using the Camelot wheel.
-fn key_compatibility(seed_key: &str, cand_key: &str) -> (f64, &'static str) {
+pub(crate) fn key_compatibility(seed_key: &str, cand_key: &str) -> (f64, &'static str) {
     let seed_norm = normalize_enharmonic(seed_key);
     let cand_norm = normalize_enharmonic(cand_key);
 
@@ -758,7 +758,7 @@ pub struct EmbeddingAxis {
     pub desc: String,
 }
 
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
     }

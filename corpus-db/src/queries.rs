@@ -315,6 +315,30 @@ pub fn find_by_property_range(
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Find files with high stem awareness scores for a given stem name.
+/// Returns (FileEntry, score) pairs sorted by score descending.
+pub fn find_files_by_stem_score(
+    conn: &Connection,
+    stem_name: &str,
+    min_score: f64,
+    limit: usize,
+) -> Result<Vec<(FileEntry, f64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.id, f.path, f.filename, f.extension, f.size_bytes,
+                f.modified_date, f.parent_folder, p.value_num
+         FROM properties p
+         JOIN files f ON f.path = p.path
+         WHERE p.domain = 'stems' AND p.key = ?1 AND p.value_num >= ?2
+         ORDER BY p.value_num DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![stem_name, min_score, limit as i64], |row| {
+        let file = row_to_file(row)?;
+        let val: f64 = row.get("value_num")?;
+        Ok((file, val))
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// Find all files that have at least one property in a given domain.
 pub fn find_files_by_domain(conn: &Connection, domain: &str) -> Result<Vec<FileEntry>> {
     let mut stmt = conn.prepare(
@@ -497,6 +521,37 @@ pub fn get_segment_embeddings(conn: &Connection, segment_ids: &[String], model: 
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// Load segments of a given type for a file, paired with their embedding vectors.
+/// Convenience wrapper combining get_segments_by_type + get_segment_embeddings.
+pub fn get_segments_with_embeddings(
+    conn: &Connection,
+    path: &str,
+    segment_type: &str,
+    emb_model: &str,
+) -> Result<Vec<(Segment, Vec<f32>)>> {
+    let segments = get_segments_by_type(conn, path, segment_type)?;
+    if segments.is_empty() {
+        return Ok(Vec::new());
+    }
+    let seg_ids: Vec<String> = segments.iter().map(|s| s.id.clone()).collect();
+    let embs = get_segment_embeddings(conn, &seg_ids, emb_model)?;
+    let emb_map: std::collections::HashMap<String, Vec<f32>> = embs
+        .into_iter()
+        .map(|e| (e.segment_id, e.vector))
+        .collect();
+    let result = segments
+        .into_iter()
+        .filter_map(|s| {
+            let vec = emb_map.get(&s.id)?.clone();
+            if vec.is_empty() {
+                return None;
+            }
+            Some((s, vec))
+        })
+        .collect();
+    Ok(result)
+}
+
 /// Find all file paths that have segments of a given type with embeddings for a model.
 pub fn find_paths_with_segment_embeddings(
     conn: &Connection,
@@ -531,6 +586,48 @@ pub fn count_segment_embeddings(conn: &Connection, model: &str) -> Result<i64> {
         |row| row.get(0),
     )?;
     Ok(count)
+}
+
+// ---------------------------------------------------------------------------
+// Model discovery
+// ---------------------------------------------------------------------------
+
+/// Find the best available segment embedding model for a given segment type.
+/// Prefers larger models (ViT-L-14 > ViT-B-32, SO400M > smaller).
+/// Returns None if no segment embeddings exist for this type.
+pub fn best_segment_emb_model(conn: &Connection, segment_type: &str) -> Result<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT se.model
+         FROM segment_embeddings se
+         JOIN segments s ON s.id = se.segment_id
+         WHERE s.segment_type = ?1
+         ORDER BY se.model DESC",
+    )?;
+    let rows = stmt.query_map([segment_type], |row| row.get::<_, String>(0))?;
+    let models: Vec<String> = rows.filter_map(|r| r.ok()).collect();
+
+    // Prefer larger/newer models
+    let preference = ["clip:ViT-L-14", "siglip:SO400M-384", "clip:ViT-B-32"];
+    for pref in preference {
+        if models.iter().any(|m| m == pref) {
+            return Ok(Some(pref.to_string()));
+        }
+    }
+    Ok(models.into_iter().next())
+}
+
+/// Find all distinct embedding models available in the embeddings table.
+pub fn available_embedding_models(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT model FROM embeddings ORDER BY model")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Find all distinct neighbor graph models.
+pub fn available_neighbor_models(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT model FROM neighbors ORDER BY model")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -637,6 +734,37 @@ pub fn get_folder_siblings(conn: &Connection, path: &str, limit: usize) -> Resul
          AND f.path != ?1 LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![path, limit as i64], row_to_file)?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Get files in the same folder modified within a time window of the given file.
+/// Returns files sorted by temporal proximity (closest first).
+pub fn get_session_siblings(
+    conn: &Connection,
+    path: &str,
+    time_window_secs: i64,
+    limit: usize,
+) -> Result<Vec<FileEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT f2.id, f2.path, f2.filename, f2.extension, f2.size_bytes,
+                f2.modified_date, f2.parent_folder
+         FROM files f1
+         JOIN files f2 ON f2.parent_folder = f1.parent_folder
+         WHERE f1.path = ?1
+           AND f2.path != ?1
+           AND f1.modified_date IS NOT NULL
+           AND f2.modified_date IS NOT NULL
+           AND ABS(
+               CAST(strftime('%s', f2.modified_date) AS INTEGER)
+             - CAST(strftime('%s', f1.modified_date) AS INTEGER)
+           ) <= ?2
+         ORDER BY ABS(
+               CAST(strftime('%s', f2.modified_date) AS INTEGER)
+             - CAST(strftime('%s', f1.modified_date) AS INTEGER)
+           ) ASC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![path, time_window_secs, limit as i64], row_to_file)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
