@@ -416,7 +416,9 @@ function startTraversal(query) {
     body: JSON.stringify({query, count: 500}),
   })
   .then(r => r.json())
-  .then(results => {
+  .then(data => {
+    // Handle both {results: [...]} and plain [...] formats
+    const results = Array.isArray(data) ? data : (data.results || []);
     allResults = results;
     setStatus(`${results.length} results — streaming first ${batchSize}...`);
     document.getElementById('btn-play').textContent = 'Playing...';
