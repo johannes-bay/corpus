@@ -7,6 +7,7 @@ members = [
     "corpus-associate",
     "corpus-ui",
     "corpus-generate",
+    "corpus-compose",
     "corpus-cli",
 ]
 
@@ -32,6 +33,10 @@ corpus-associate = { path = "corpus-associate" }
 corpus-keyfinder = { path = "corpus-keyfinder" }
 corpus-ui = { path = "corpus-ui" }
 corpus-generate = { path = "corpus-generate" }
+corpus-compose = { path = "corpus-compose" }
+symphonia = { version = "0.5", features = ["mp3", "aac", "flac", "ogg", "wav", "pcm", "isomp4"] }
+hound = "3.5"
+uuid = { version = "1", features = ["v4"] }
 image = "0.25"
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1", features = ["full"] }

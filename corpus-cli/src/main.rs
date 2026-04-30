@@ -2,6 +2,7 @@ use std::sync::Mutex;
 
 use anyhow::{bail, Result};
 use clap::{Parser, Subcommand};
+use corpus_compose::Renderer;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -117,6 +118,78 @@ enum Commands {
     },
     /// List all registered scoring axes with descriptions
     Axes,
+    /// Compose a collage from a seed image and matched candidates.
+    ComposeCollage {
+        /// Path to the index database
+        #[arg(long)]
+        db: String,
+        /// Seed image path
+        #[arg(long)]
+        seed: String,
+        /// Axis weights (same format as compose)
+        #[arg(long, default_value = "visual=1.0,objects=0.5")]
+        axes: String,
+        /// Number of matches to use as members
+        #[arg(long, default_value_t = 4)]
+        count: usize,
+        /// Layout mode: role-based, grid, balanced
+        #[arg(long, default_value = "role-based")]
+        layout: String,
+        /// Tonal consistency [0..1]
+        #[arg(long, default_value_t = 0.5)]
+        tonal_consistency: f64,
+        /// Canvas width
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+        /// Canvas height
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+        /// Output directory
+        #[arg(long)]
+        output: String,
+    },
+    /// Compose an audio sequence/layer from a seed audio and matched candidates.
+    ComposeAudio {
+        /// Path to the index database
+        #[arg(long)]
+        db: String,
+        /// Seed audio path
+        #[arg(long)]
+        seed: String,
+        /// Axis weights (same format as compose)
+        #[arg(long, default_value = "sonic=1.0,bpm=0.5")]
+        axes: String,
+        /// Number of matches to layer/sequence
+        #[arg(long, default_value_t = 5)]
+        count: usize,
+        /// Mix mode: sequence, layer, duck-and-layer
+        #[arg(long, default_value = "sequence")]
+        mode: String,
+        /// Crossfade duration (ms)
+        #[arg(long, default_value_t = 2000)]
+        crossfade_ms: u32,
+        /// Max seconds per clip
+        #[arg(long, default_value_t = 20.0)]
+        max_clip_secs: f64,
+        /// Output directory
+        #[arg(long)]
+        output: String,
+    },
+    /// Print the manifest for a saved composition JSON file.
+    ComposeManifest {
+        /// Path to the composition JSON manifest
+        #[arg(long)]
+        composition: String,
+    },
+    /// Re-render a previously saved composition manifest.
+    ComposeRender {
+        /// Path to the composition JSON manifest
+        #[arg(long)]
+        composition: String,
+        /// Output directory
+        #[arg(long)]
+        output: String,
+    },
 }
 
 fn parse_axes<'a>(
@@ -436,7 +509,206 @@ async fn main() -> Result<()> {
             println!();
             println!("Usage: corpus compose --axes bpm=0.8,key=0.9,spectral=0.3,temporal=0.5,provenance=0.2");
         }
+        Commands::ComposeCollage {
+            db,
+            seed,
+            axes,
+            count,
+            layout,
+            tonal_consistency,
+            width,
+            height,
+            output,
+        } => {
+            let conn = corpus_db::open_db(&db)?;
+            let registry = corpus_associate::AxisRegistry::new();
+            let weighted_axes = parse_axes(&axes, &registry)?;
+            let matches =
+                corpus_associate::matcher::find_matches(&conn, &seed, &weighted_axes, count)?;
+            let composition = build_collage_composition(
+                &seed,
+                &matches,
+                &layout,
+                tonal_consistency,
+                (width, height),
+            )?;
+            let output_dir = std::path::Path::new(&output);
+            let manifest = corpus_compose::ManifestRenderer::new()
+                .render(&composition, output_dir)
+                .map_err(|e| anyhow::anyhow!("manifest: {e}"))?;
+            let image_path = corpus_compose::CollageRenderer::new()
+                .render(&composition, output_dir)
+                .map_err(|e| anyhow::anyhow!("collage: {e}"))?;
+            println!("Composition: {} ({} members)", composition.name, composition.members.len());
+            println!("Manifest format: {}", manifest.output_format);
+            println!("Collage rendered: {}", image_path.display());
+        }
+        Commands::ComposeAudio {
+            db,
+            seed,
+            axes,
+            count,
+            mode,
+            crossfade_ms,
+            max_clip_secs,
+            output,
+        } => {
+            let conn = corpus_db::open_db(&db)?;
+            let registry = corpus_associate::AxisRegistry::new();
+            let weighted_axes = parse_axes(&axes, &registry)?;
+            let matches =
+                corpus_associate::matcher::find_matches(&conn, &seed, &weighted_axes, count)?;
+            let composition = build_audio_composition(
+                &seed,
+                &matches,
+                &mode,
+                crossfade_ms,
+                max_clip_secs,
+            )?;
+            let output_dir = std::path::Path::new(&output);
+            corpus_compose::ManifestRenderer::new()
+                .render(&composition, output_dir)
+                .map_err(|e| anyhow::anyhow!("manifest: {e}"))?;
+            let audio_path = corpus_compose::AudioRenderer::new()
+                .render(&composition, output_dir)
+                .map_err(|e| anyhow::anyhow!("audio: {e}"))?;
+            println!("Composition: {} ({} members)", composition.name, composition.members.len());
+            println!("Audio rendered: {}", audio_path.display());
+        }
+        Commands::ComposeManifest { composition } => {
+            let manifest = load_manifest(&composition)?;
+            let text = corpus_compose::ManifestRenderer::new()
+                .render_text(&manifest.composition);
+            println!("{text}");
+        }
+        Commands::ComposeRender { composition, output } => {
+            let manifest = load_manifest(&composition)?;
+            let output_dir = std::path::Path::new(&output);
+            let comp = manifest.composition;
+            let result_path = match comp.strategy {
+                corpus_compose::CompositionStrategy::Collage(_) => corpus_compose::CollageRenderer::new()
+                    .render(&comp, output_dir)
+                    .map_err(|e| anyhow::anyhow!("collage: {e}"))?,
+                corpus_compose::CompositionStrategy::AudioMix(_) => corpus_compose::AudioRenderer::new()
+                    .render(&comp, output_dir)
+                    .map_err(|e| anyhow::anyhow!("audio: {e}"))?,
+                _ => {
+                    let m = corpus_compose::ManifestRenderer::new()
+                        .render(&comp, output_dir)
+                        .map_err(|e| anyhow::anyhow!("manifest: {e}"))?;
+                    output_dir.join(format!("{}.json", m.composition.id))
+                }
+            };
+            println!("Rendered: {}", result_path.display());
+        }
     }
 
     Ok(())
+}
+
+fn build_collage_composition(
+    seed_path: &str,
+    matches: &[corpus_associate::ScoredMatch],
+    layout_mode: &str,
+    tonal_consistency: f64,
+    canvas: (u32, u32),
+) -> Result<corpus_compose::Composition> {
+    use corpus_compose::strategy::{CollageStrategy, EdgeBlend, LayoutMode};
+    use corpus_compose::{ArtifactRef, CompositionMember, CompositionStrategy, MemberRole};
+
+    let layout = match layout_mode {
+        "grid" => LayoutMode::Grid { cols: 3, rows: 2 },
+        "balanced" => LayoutMode::Balanced,
+        _ => LayoutMode::RoleBased,
+    };
+
+    let strategy = CompositionStrategy::Collage(CollageStrategy {
+        layout,
+        tonal_consistency,
+        edge_blending: EdgeBlend::Feathered(8),
+        canvas_size: canvas,
+    });
+
+    let seed_ref = ArtifactRef::file(seed_path, "image");
+    let mut comp = corpus_compose::Composition::new("collage", seed_ref.clone(), strategy);
+    comp.members.push(CompositionMember::new(
+        seed_ref,
+        MemberRole::Seed,
+        1.0,
+        "seed",
+    ));
+
+    let role_cycle = [
+        MemberRole::Background,
+        MemberRole::Structure,
+        MemberRole::Subject,
+        MemberRole::Accent,
+        MemberRole::Texture,
+    ];
+    for (i, m) in matches.iter().enumerate() {
+        let role = role_cycle[i % role_cycle.len()];
+        comp.members.push(CompositionMember::new(
+            ArtifactRef::file(m.file.path.clone(), "image"),
+            role,
+            m.total_score,
+            format!("axis match score {:.3}", m.total_score),
+        ));
+    }
+    Ok(comp)
+}
+
+fn build_audio_composition(
+    seed_path: &str,
+    matches: &[corpus_associate::ScoredMatch],
+    mode: &str,
+    crossfade_ms: u32,
+    max_clip_secs: f64,
+) -> Result<corpus_compose::Composition> {
+    use corpus_compose::strategy::{AudioMixMode, AudioMixStrategy};
+    use corpus_compose::{ArtifactRef, CompositionMember, CompositionStrategy, MemberRole};
+
+    let mix_mode = match mode {
+        "layer" => AudioMixMode::Layer,
+        "duck-and-layer" | "duck" => AudioMixMode::DuckAndLayer,
+        _ => AudioMixMode::Sequence,
+    };
+
+    let strategy = CompositionStrategy::AudioMix(AudioMixStrategy {
+        mode: mix_mode,
+        crossfade_ms,
+        max_clip_secs,
+        ..Default::default()
+    });
+
+    let seed_ref = ArtifactRef::file(seed_path, "audio");
+    let mut comp = corpus_compose::Composition::new("audio-mix", seed_ref.clone(), strategy);
+    comp.members.push(CompositionMember::new(
+        seed_ref,
+        MemberRole::Seed,
+        1.0,
+        "seed",
+    ));
+
+    let role_cycle = [
+        MemberRole::Background,
+        MemberRole::Subject,
+        MemberRole::Accent,
+        MemberRole::Texture,
+    ];
+    for (i, m) in matches.iter().enumerate() {
+        let role = role_cycle[i % role_cycle.len()];
+        comp.members.push(CompositionMember::new(
+            ArtifactRef::file(m.file.path.clone(), "audio"),
+            role,
+            m.total_score,
+            format!("axis match score {:.3}", m.total_score),
+        ));
+    }
+    Ok(comp)
+}
+
+fn load_manifest(path: &str) -> Result<corpus_compose::CompositionManifest> {
+    let bytes = std::fs::read(path)?;
+    let manifest: corpus_compose::CompositionManifest = serde_json::from_slice(&bytes)?;
+    Ok(manifest)
 }

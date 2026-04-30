@@ -631,7 +631,7 @@ pub async fn concept_search(
 // Error type
 // ---------------------------------------------------------------------------
 
-pub struct AppError(String);
+pub struct AppError(pub String);
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
